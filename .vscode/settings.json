@@ -1,0 +1,23 @@
+{
+  "C_Cpp.clang_format_path": "${workspaceRoot}/third_party/v8/buildtools/win/clang-format.exe",
+  "C_Cpp.clang_format_style": "Google",
+  "debug.allowBreakpointsEverywhere": true,
+  "editor.acceptSuggestionOnCommitCharacter": false,
+  "editor.formatOnSave": true,
+  "editor.rulers": [80],
+  "prettier.endOfLine": "lf",
+  "prettier.proseWrap": "always",
+  "prettier.requireConfig": true,
+  "python.formatting.provider": "yapf",
+  "python.formatting.yapfPath": "${workspaceRoot}/python_packages/yapf",
+  "rust.clippy_preference": "on",
+  "typescript.tsc.autoDetect": "off",
+  "rust-client.revealOutputChannelOn": "info",
+  "rust.cfg_test": true,
+  "rust.rustfmt_path": "${workspaceRoot}/third_party/rustfmt/win/rustfmt.exe",
+  "rust-client.logToFile": true,
+  "git.ignoreLimitWarning": true,
+  "rust-client.channel": "nightly",
+  "typescript.suggest.completeFunctionCalls": true,
+  "editor.formatOnType": true
+}

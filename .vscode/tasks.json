@@ -1,0 +1,77 @@
+{
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  // for the documentation about the tasks.json format
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Deno: setup (gn)",
+      "group": "build",
+      "type": "process",
+      "command": "${config:python.pythonPath}",
+      "args": ["${workspaceRoot}/tools/setup.py", "deno"],
+      "options": {
+        "env": {
+          "DENO_BUILD_ARGS": "symbol_level=2"
+        }
+      },
+      "problemMatcher": {
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": [
+          {
+            "regexp": "^(ERROR |WARNING |See )(?:at )?(?://([^:\\s]+)(?::(\\d+))?(?::(\\d+))?):\\s*(.*?)\\.?\\s*$",
+            "severity": 1,
+            "file": 2,
+            "line": 3,
+            "column": 4,
+            "message": 5
+          }
+        ],
+        "severity": "info"
+      }
+    },
+    {
+      "label": "Deno: build debug (ninja)",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "type": "process",
+      "command": "${config:python.pythonPath}",
+      "args": ["${workspaceRoot}/tools/build.py"],
+      "options": {
+        "cwd": "${workspaceRoot}/target/debug"
+      },
+      "problemMatcher": [
+        "$gcc",
+        "$msCompile",
+        "$rustc",
+        "$tsc",
+        {
+          "fileLocation": ["relative", "${workspaceFolder}"],
+          "pattern": [
+            {
+              "regexp": "^(ERROR |WARNING |See )(?:at )?(?://([^:\\s]+)(?::(\\d+))?(?::(\\d+))?):\\s*(.*?)\\.?\\s*$",
+              "severity": 1,
+              "file": 2,
+              "line": 3,
+              "column": 4,
+              "message": 5
+            }
+          ],
+          "severity": "info"
+        }
+      ]
+    },
+    {
+      "label": "Deno: format all",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "type": "process",
+      "command": "${config:python.pythonPath}",
+      "args": ["${workspaceRoot}/tools/format.py"],
+      "problemMatcher": []
+    }
+  ]
+}
