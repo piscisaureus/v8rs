@@ -14,7 +14,10 @@ class AA {
 
   virtual void virt() {}
 
-  static int i_am_static(void* k) { return 3; }
+  static int powpow(int& a) {
+    a *= a;
+    return a * a;
+  }
 };
 
 class BB : public AA {
@@ -73,33 +76,42 @@ struct pod {
 template <class T>
 using pod_t = typename pod<T>::type;
 
-// Functions and methods
-template <class F, template <class, class, class...> class Functor>
-class transform_function_helper {
+// Helper class that deduces `this` type, return type, and argument types
+// from a function prototype, and then applies functor that can then modify
+// the function signature.
+template <template <class, class, class...> class functor_template,
+          class F,
+          F fn>
+class transform_function {
   template <class R, class... A>
-  static constexpr auto deduce(R (*)(A...)) -> Functor<void, R, A...>;
+  static constexpr auto select_functor(R (*)(A...))
+      -> functor_template<void, R, A...>;
 
   template <class T, class R, class... A>
-  static constexpr auto deduce(R (T::*)(A...)) -> Functor<T, R, A...>;
+  static constexpr auto select_functor(R (T::*)(A...))
+      -> functor_template<T, R, A...>;
 
   template <class T, class R, class... A>
-  static constexpr auto deduce(R (T::*)(A...) const)
-      -> Functor<const T, R, A...>;
+  static constexpr auto select_functor(R (T::*)(A...) const)
+      -> functor_template<const T, R, A...>;
+
+  using functor = decltype(select_functor(fn));
 
  public:
-  using result = decltype(deduce(std::declval<F>()));
+  static constexpr auto result = functor::template result<fn>;
 };
 
-template <class F, template <class, class, class...> class Functor>
-using transform_function = typename transform_function_helper<F, Functor>::result;
-
-// Convert methods to ordinary functions with `this` as the first argument.
-template <class F>
-class method_to_function_helper {
+// In some ABIs the implicit "this" argument that is passed to non-static
+// methods is passed in a special register. Since Rust doesn't support C++
+// FFI, it doesn't know how to deal with this. This transformation wraps
+// instance methods in ordinary functions that receive `this` as their first
+// parameter.
+template <class F, F fn>
+class method_to_function {
   // Instance method.
   template <class T, class R, class... A>
-  struct transform {
-    template<F fn>
+  struct functor {
+    template <F fn>
     static R result(T* self, A... args) {
       return (self->*fn)(args...);
     }
@@ -107,29 +119,30 @@ class method_to_function_helper {
 
   // Already-static method or ordinary function.
   template <class R, class... A>
-  struct transform<void, R, A...> {
-    template<F fn>
+  struct functor<void, R, A...> {
+    template <F fn>
     static constexpr auto result = fn;
   };
 
  public:
-  template <F fn>
-  static constexpr auto result = transform_function<F, transform>::template result<fn>;
+  static constexpr auto result = transform_function<functor, F, fn>::result;
 };
 
+// Wraps a function that returns a non-POD object into a function that
+// returns a POD object. This is necessary because some ABIs return small
+// objects in registers when they're POD, while non-POD object are written to
+// a caller-specified stack address. Since Rust only supports FFI with C, where
+// all structs are POD by definition, it'll always return small structs on the
+// stack.
 template <class F, F fn>
-static constexpr auto method_to_function = method_to_function_helper<F>::template result<fn>;
-
-// Class instance methods
-template <class F>
-class function_return_pod_helper {
+class make_function_return_pod {
   template <class T, class R, class... A>
-  struct transform;
+  struct functor;
 
-  // Call method with return value.
+  // Convert return value.
   template <class R, class... A>
-  struct transform<void, R, A...> {
-    template<F fn>
+  struct functor<void, R, A...> {
+    template <F fn>
     static pod_t<R> result(A... args) {
       return pod<R>::into(fn(args...));
     }
@@ -137,28 +150,28 @@ class function_return_pod_helper {
 
   // No return value.
   template <class... A>
-  struct transform<void, void, A...> {
-    template<F fn>
+  struct functor<void, void, A...> {
+    template <F fn>
     static constexpr auto result = fn;
   };
 
  public:
-  template <F fn>
-  static constexpr auto result = transform_function<F, transform>::template result<fn>;
+  static constexpr auto result = transform_function<functor, F, fn>::result;
 };
 
 template <class F, F fn>
-static constexpr auto function_return_pod = function_return_pod_helper<F>::template result<fn>;
+struct wrap_function_helper {
+  static constexpr auto temp = method_to_function<decltype((fn)), fn>::result;
+  static constexpr auto result =
+      make_function_return_pod<decltype((temp)), temp>::result;
+};
 
-#define wrap_method_1(method) \
-  method_to_function<decltype(method), method>
-#define wrap_method(method) \
-  function_return_pod<decltype((wrap_method_1(method))), (wrap_method_1(method))>
+#define wrap_function(fn) wrap_function_helper<decltype(fn), fn>::result
 
 extern "C" {
-auto* AA_print = wrap_method(&AA::print);
-auto* BB_print = wrap_method(&BB::print);
-auto* BB_get_rets = wrap_method(&BB::get_rets);
-auto* BB_print_rets = wrap_method(&BB::print_rets);
-auto* AA_i_am_static = wrap_method(&AA::i_am_static);
+auto* AA_print = wrap_function(&AA::print);
+auto* AA_powpow = wrap_function(&AA::powpow);
+auto* BB_print = wrap_function(&BB::print);
+auto* BB_get_rets = wrap_function(&BB::get_rets);
+auto* BB_print_rets = wrap_function(&BB::print_rets);
 }
