@@ -1,2 +1,2 @@
 @echo off
-cls && clang-cl /LD lib.cpp && cl /LD /EHsc lib.cpp
+cls && clang-cl -std:c++17 /LD lib.cpp && cl -std:c++17 /LD /EHsc lib.cpp
