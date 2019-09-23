@@ -13,6 +13,8 @@ class AA {
   }
 
   virtual void virt() {}
+
+  static int i_am_static(void* k) { return 3; }
 };
 
 class BB : public AA {
@@ -53,26 +55,6 @@ class BB : public AA {
 
 // -- Wrapper --
 
-// Instance methods.
-template <class M, template <class, class, class...> class Functor>
-class transform_method {
-  template <class R, class T, class... A>
-  static constexpr auto deduce(R (T::*)(A...)) -> Functor<R, T, A...>;
-
-  template <class R, class T, class... A>
-  static constexpr auto deduce(R (T::*)(A...) const)
-      -> Functor<R, const T, A...>;
-
- public:
-  using type = decltype(deduce(std::declval<M>()));
-};
-
-template <class M, template <class, class, class...> class Functor>
-using transform_method_t = typename transform_method<M, Functor>::type;
-
-template <class T>
-using wrap_type = T;
-
 template <class T>
 struct pod {
   using type = std::aligned_storage_t<sizeof(T), alignof(T)>;
@@ -91,38 +73,92 @@ struct pod {
 template <class T>
 using pod_t = typename pod<T>::type;
 
-// Class instance methods
-template <class M, M method>
-class wrap_method_helper {
-  template <class R, class T, class... A>
-  struct make_wrapper;
+// Functions and methods
+template <class F, template <class, class, class...> class Functor>
+class transform_function_helper {
+  template <class R, class... A>
+  static constexpr auto deduce(R (*)(A...)) -> Functor<void, R, A...>;
 
-  // Call method with return value.
-  template <class R, class T, class... A>
-  struct make_wrapper {
-    static pod_t<R> invoke(wrap_type<T*> self, wrap_type<A>... args) {
-      return pod<R>::into((self->*method)(args...));
+  template <class T, class R, class... A>
+  static constexpr auto deduce(R (T::*)(A...)) -> Functor<T, R, A...>;
+
+  template <class T, class R, class... A>
+  static constexpr auto deduce(R (T::*)(A...) const)
+      -> Functor<const T, R, A...>;
+
+ public:
+  using result = decltype(deduce(std::declval<F>()));
+};
+
+template <class F, template <class, class, class...> class Functor>
+using transform_function = typename transform_function_helper<F, Functor>::result;
+
+// Convert methods to ordinary functions with `this` as the first argument.
+template <class F>
+class method_to_function_helper {
+  // Instance method.
+  template <class T, class R, class... A>
+  struct transform {
+    template<F fn>
+    static R result(T* self, A... args) {
+      return (self->*fn)(args...);
     }
   };
 
-  // Call method without return value.
-  template <class T, class... A>
-  struct make_wrapper<void, T, A...> {
-    static void invoke(wrap_type<T*> self, wrap_type<A>... args) {
-      (self->*method)(args...);
-    }
+  // Already-static method or ordinary function.
+  template <class R, class... A>
+  struct transform<void, R, A...> {
+    template<F fn>
+    static constexpr auto result = fn;
   };
 
  public:
-  static constexpr auto wrapper = transform_method_t<M, make_wrapper>::invoke;
+  template <F fn>
+  static constexpr auto result = transform_function<F, transform>::template result<fn>;
 };
 
+template <class F, F fn>
+static constexpr auto method_to_function = method_to_function_helper<F>::template result<fn>;
+
+// Class instance methods
+template <class F>
+class function_return_pod_helper {
+  template <class T, class R, class... A>
+  struct transform;
+
+  // Call method with return value.
+  template <class R, class... A>
+  struct transform<void, R, A...> {
+    template<F fn>
+    static pod_t<R> result(A... args) {
+      return pod<R>::into(fn(args...));
+    }
+  };
+
+  // No return value.
+  template <class... A>
+  struct transform<void, void, A...> {
+    template<F fn>
+    static constexpr auto result = fn;
+  };
+
+ public:
+  template <F fn>
+  static constexpr auto result = transform_function<F, transform>::template result<fn>;
+};
+
+template <class F, F fn>
+static constexpr auto function_return_pod = function_return_pod_helper<F>::template result<fn>;
+
+#define wrap_method_1(method) \
+  method_to_function<decltype(method), method>
 #define wrap_method(method) \
-  wrap_method_helper<decltype(method), method>::wrapper
+  function_return_pod<decltype((wrap_method_1(method))), (wrap_method_1(method))>
 
 extern "C" {
 auto* AA_print = wrap_method(&AA::print);
 auto* BB_print = wrap_method(&BB::print);
 auto* BB_get_rets = wrap_method(&BB::get_rets);
 auto* BB_print_rets = wrap_method(&BB::print_rets);
+auto* AA_i_am_static = wrap_method(&AA::i_am_static);
 }
