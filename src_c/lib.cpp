@@ -25,27 +25,29 @@ class BB : public AA {
   }
 
   struct Rets {
-    Rets(int a, int b, int c): n{a} {}
+    Rets(int a, int b, int c) : n{a} {}
     void print() {
       std::cout << "Rets {" << std::endl;
       std::cout << "  nn: [ ";
-      for (auto ni: n) {
-        std::cout << ni << ", "; 
+      for (auto ni : n) {
+        std::cout << ni << ", ";
       }
       std::cout << "]" << std::endl;
       std::cout << "  b: " << b << std::endl;
       std::cout << "}" << std::endl;
     }
-    private:
+
+   private:
     int n[1];
     bool b = false;
   };
 
   Rets get_rets(int a, int b, int c) {
-    return Rets(a,b,c);
+    return Rets(a, b, c);
   }
-  void print_rets(Rets& rets) {
-    rets.print();
+  void print_rets(Rets r1, Rets& r2) const {
+    r1.print();
+    r2.print();
   }
 };
 
@@ -55,8 +57,7 @@ class BB : public AA {
 template <class M, template <class, class, class...> class Functor>
 class transform_method {
   template <class R, class T, class... A>
-  static constexpr auto deduce(R (T::*)(A...))
-      -> Functor<R, T, A...>;
+  static constexpr auto deduce(R (T::*)(A...)) -> Functor<R, T, A...>;
 
   template <class R, class T, class... A>
   static constexpr auto deduce(R (T::*)(A...) const)
