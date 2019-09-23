@@ -12,11 +12,23 @@ class AA {
     std::cout << "AA::print(" << d << ") " << a_ << std::endl;
   }
 
-  virtual void virt() {}
+  virtual void virt1() {
+    std::cout << "a";
+  }
+  virtual void virt2() {
+    std::cout << "b";
+  }
 
   static int powpow(int& a) {
     a *= a;
     return a * a;
+  }
+
+  static void staticx() {
+    std::cout << "static";
+  }
+  void notvirt() {
+    std::cout << "notvirt";
   }
 };
 
@@ -54,6 +66,16 @@ class BB : public AA {
     r1.print();
     r2.print();
   }
+
+  virtual void virt1() {
+    std::cout << "c";
+  }
+  virtual void virt2() {
+    std::cout << "d";
+  }
+  virtual void virt3() {
+    std::cout << "e";
+  }
 };
 
 // -- Wrapper --
@@ -62,13 +84,13 @@ template <class T>
 struct pod {
   using type = std::aligned_storage_t<sizeof(T), alignof(T)>;
 
-  static type into(T value) {
+  static inline type into(T value) {
     // TODO: this violates aliasing rules pretty badly, but I don't see
     // a reasonable other way to achieve this.
     // Unfortunately we don't have std::launder until C++17.
     return *reinterpret_cast<type*>(&value);
   }
-  static T from(type value) {
+  static inline T from(type value) {
     return *reinterpret_cast<T*>(&value);
   }
 };
@@ -112,7 +134,7 @@ class method_to_function {
   template <class T, class R, class... A>
   struct functor {
     template <F fn>
-    static R result(T* self, A... args) {
+    static inline R result(T* self, A... args) {
       return (self->*fn)(args...);
     }
   };
@@ -143,7 +165,7 @@ class make_function_return_pod {
   template <class R, class... A>
   struct functor<void, R, A...> {
     template <F fn>
-    static pod_t<R> result(A... args) {
+    static inline pod_t<R> result(A... args) {
       return pod<R>::into(fn(args...));
     }
   };
@@ -169,9 +191,9 @@ struct wrap_function_helper {
 #define wrap_function(fn) wrap_function_helper<decltype(fn), fn>::result
 
 extern "C" {
-auto* AA_print = wrap_function(&AA::print);
-auto* AA_powpow = wrap_function(&AA::powpow);
-auto* BB_print = wrap_function(&BB::print);
-auto* BB_get_rets = wrap_function(&BB::get_rets);
-auto* BB_print_rets = wrap_function(&BB::print_rets);
+auto AA_print = wrap_function(&AA::print);
+auto AA_powpow = wrap_function(&AA::powpow);
+auto BB_print = wrap_function(&BB::print);
+auto BB_get_rets = wrap_function(&BB::get_rets);
+auto BB_print_rets = wrap_function(&BB::print_rets);
 }
