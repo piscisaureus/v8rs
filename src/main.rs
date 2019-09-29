@@ -46,28 +46,35 @@ struct class_delete<T: 'static>(
 );
 
 extern "C" {
-  static AA_new: class_new_1<AA, i32>;
-  static AA_delete: class_delete<AA>;
+  static AA_construct: extern "C" fn(&mut std::mem::MaybeUninit<AA>, i32, i32);
+  static AA_delete: extern "C" fn(&mut AA) -> ();
   static AA_print: extern "C" fn(&mut AA, f64) -> ();
   static AA_powpow: extern "C" fn(&mut i32) -> i32;
   static BB_print: extern "C" fn(&mut BB, f64) -> ();
   static BB_get_rets: extern "C" fn(&mut BB, i32, i32, i32) -> Rets;
   static BB_print_rets: extern "C" fn(&BB, Rets, &Rets) -> ();
-  static CC_new: class_new_1<CC, *mut [i32; 10]>;
+  static CC_construct:
+    extern "C" fn(&mut std::mem::MaybeUninit<CC>, *mut [i32; 10]);
   static CC_fifth: extern "C" fn(&CC) -> &mut i32;
 }
 
+#[allow(unused_variables)]
 fn main() {
   // let mut aa = AA {
   //  _vtable: std::ptr::null(),
   //  a_: 42,
   //};
-  let mut aa = unsafe { AA_new.0(99) };
+  let mut aa = unsafe { std::mem::MaybeUninit::<AA>::uninit() };
+  unsafe {
+    AA_construct(&mut aa, 3, 4);
+  };
+  let mut aa = unsafe { aa.assume_init() };
   dbg!(&aa);
-  let mut bb = BB { base: *aa };
+  let mut bb = BB { base: aa };
   unsafe {
     AA_print(&mut aa, 1.5f64);
     let mut a = 2i32;
+    println!("Ole!");
     let aa = AA_powpow(&mut a);
     println!("AA_powpow: a^2={} a^2^2={}", a, aa);
     BB_print(&mut bb, 2.5f64);
@@ -82,9 +89,10 @@ fn main() {
     for i in 0..9 {
       list[i] = i as i32;
     }
-    let mut cc = std::mem::MaybeUninit::uninit();
-    let mut cc = CC_new.1(&mut cc, &mut list);
-    let mut f = CC_fifth(&cc);
+    let mut cc = std::mem::MaybeUninit::<CC>::uninit();
+    CC_construct(&mut cc, &mut list);
+    let mut cc = cc.assume_init();
+    let f = CC_fifth(&cc);
     println!("fifth {}", *f);
   }
 }

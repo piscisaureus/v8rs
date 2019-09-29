@@ -1,5 +1,6 @@
 
 #include <iostream>
+#include <memory>
 #include <new>
 #include <utility>
 
@@ -9,7 +10,7 @@ class AA {
   int a_;
 
  public:
-  AA(int a) : a_(a) {}
+  AA(int a, int b) : a_(a) {}
 
   void print(double d) {
     std::cout << "AA::print(" << d << ") " << a_ << std::endl;
@@ -37,7 +38,7 @@ class AA {
 
 class BB : public AA {
  public:
-  BB() : AA(2){};
+  BB() : AA(2, 0){};
 
   void print(double d) {
     std::cout << "BB::print(" << d << ") -> ";
@@ -83,31 +84,17 @@ class BB : public AA {
 
 class CC {
   int* list;
-public:
-  explicit CC(int* l): list(l) {}
-  int&& fifth() const {
-    return std::move(list[5]);
+
+ public:
+  explicit CC(int* l) : list(l) {}
+  int& fifth() const {
+    return list[5];
   }
 };
 
 // -- Wrapper --
-template <class T>
-struct pod {
-  using type =
-      std::conditional_t<std::is_pod_v<T>,
-                         T,
-                         std::aligned_storage_t<sizeof(T), alignof(T)>>;
-
-  static inline type into(T value) {
-    // TODO: this violates aliasing rules pretty badly, but I don't see
-    // a reasonable other way to achieve this.
-    // Unfortunately we don't have std::launder until C++17.
-    return *reinterpret_cast<type*>(&value);
-  }
-  static inline T from(type value) {
-    return *reinterpret_cast<T*>(&value);
-  }
-};
+template <class V>
+using storage_t = std::aligned_storage_t<sizeof(V), alignof(V)>;
 
 // Helper class that deduces `this` type, return type, and argument types
 // from a function prototype, and then applies functor that can then modify
@@ -159,12 +146,51 @@ class make_static_method {
   static constexpr auto result = transform_function<functor, F>::result;
 };
 
-// Wraps a function that returns a non-POD object into a function that
+// Wraps a function that returns a non-POD(*) object into a function that
 // returns a POD object. This is necessary because some ABIs return small
 // objects in registers when they're POD, while non-POD object are written to
 // a caller-specified stack address. Since Rust only supports FFI with C, where
 // all structs are POD by definition, it'll always return small structs on the
 // stack.
+// (*) MSFT uses the C++03 definition of POD, which is more strict than in
+// later editions. Therefore we wrapp all class and union types.
+template <class T>
+struct nil_return_adapter {
+  using abi_type = T;
+  static inline T wrap(T val) {
+    return val;
+  };
+  static inline T unwrap(T val) {
+    return val;
+  };
+};
+
+template <class T>
+struct pod_return_adapter {
+  using abi_type = storage_t<T>;
+  inline static abi_type& wrap(T&& val) {
+    assert_equal_layout();
+    return *std::launder(reinterpret_cast<abi_type*>(&val));
+  }
+  inline static T& unwrap(abi_type&& val) {
+    assert_equal_layout();
+    return *std::launder(reinterpret_cast<T*>(&val));
+  }
+
+ private:
+  inline static void assert_equal_layout() {
+    static_assert(std::is_pod_v<abi_type>, "not a POD type");
+    static_assert(sizeof(abi_type) == sizeof(T), "size mismatch");
+    static_assert(alignof(abi_type) == alignof(T), "alignment mismatch");
+  }
+};
+
+template <class T>
+using return_adapter =
+    std::conditional_t<std::is_class_v<T> || std::is_union_v<T>,
+                       pod_return_adapter<T>,
+                       nil_return_adapter<T>>;
+
 template <class F, F fn>
 class return_pod_to_rust {
   template <class T, class R, class... A>
@@ -174,8 +200,9 @@ class return_pod_to_rust {
   // by value as well.
   template <class R, class... A>
   struct functor<void, R, A...> {
-    static inline typename pod<R>::type result(A... args) {
-      return pod<R>::into(fn(std::forward<A>(args)...));
+    using adapter = return_adapter<R>;
+    static inline typename adapter::abi_type result(A... args) {
+      return adapter::wrap(fn(std::forward<A>(args)...));
     }
   };
 
@@ -203,52 +230,42 @@ class wrap_function_impl {
  public:
   static constexpr std::add_const_t<decltype((f2))> result = f2;
 };
+
 template <auto fn>
 static constexpr auto wrap_function =
     wrap_function_impl<decltype(fn), fn>::result;
 
-template <class T, class... A>
-struct wrap_class_new_impl {
-  static T& call_new(A... args) {
-    auto self = new T(std::forward<A>(args)...);
-    return *self;
+template <class T>
+union wrap_class {
+  template <class... A>
+  void construct(A... args) {
+    new (this) wrap_class(std::forward<A>(args)...);
   }
-  static T& call_constructor(T& addr, A... args) {
-    new (reinterpret_cast<char*>(&addr)) T(std::forward<A>(args)...);
-    return addr;
+  void destruct() {
+    this->~wrap_class();
   }
-  static constexpr auto result =
-      std::make_pair(wrap_function<call_new>, wrap_function<call_constructor>);
-  static_assert(sizeof(result) == sizeof(void (*)()) * 2);
-};
-template <class T, class... A>
-static constexpr auto wrap_new = wrap_class_new_impl<T, A...>::result;
 
-template <class T>
-struct wrap_class_delete_impl {
-  static void call_delete(T& self) {
-    delete &self;
-  }
-  static void call_destructor(T& self) {
-    self.~T();
-  }
-  static constexpr auto result = std::make_pair(
-      wrap_function<call_delete>, wrap_function<call_destructor>);
-  static_assert(sizeof(result) == sizeof(void (*)()) * 2);
+ private:
+  template <class... A>
+  inline wrap_class(A... args) : value_(std::forward<A>(args)...) {}
+  inline ~wrap_class() {}
+  storage_t<T> storage_;
+  T value_;
 };
-template <class T>
-static constexpr auto wrap_delete = wrap_class_delete_impl<T>::result;
 
 }  // anonymous namespace
 
 extern "C" {
-auto AA_new = wrap_new<AA, int>;
-auto AA_delete = wrap_delete<AA>;
+// auto AA_xxx = wrap_function<&::new (std::declval<void*>) AA>;
+// auto AA_xxx = wrap_xxx<AA, &std::allocator<AA>::allocate>();
+
+auto AA_construct = wrap_function<&wrap_class<AA>::construct<int, int>>;
+auto AA_destruct = wrap_function<&wrap_class<AA>::destruct>;
 auto AA_print = wrap_function<&AA::print>;
 auto AA_powpow = wrap_function<&AA::powpow>;
 auto BB_print = wrap_function<&BB::print>;
 auto BB_get_rets = wrap_function<&BB::get_rets>;
 auto BB_print_rets = wrap_function<&BB::print_rets>;
-auto CC_new = wrap_new<CC, int*>;
+auto CC_construct = wrap_function<&wrap_class<CC>::construct<int*>>;
 auto CC_fifth = wrap_function<&CC::fifth>;
 }

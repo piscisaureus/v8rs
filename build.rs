@@ -1,4 +1,5 @@
-use cc;
+//use cc;
+use cpp_build;
 
 fn main() {
   cc::Build::new()
