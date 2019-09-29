@@ -63,7 +63,7 @@ class BB : public AA {
     bool b = false;
   };
 
-  Rets get_rets(int a, int b, int c) {
+  const Rets get_rets(int a, int b, int c) {
     return Rets(a, b, c);
   }
   void print_rets(Rets r1, Rets& r2) const {
@@ -157,17 +157,19 @@ class make_static_method {
 template <class T>
 struct nil_return_adapter {
   using abi_type = T;
-  static inline T wrap(T val) {
+  inline static T wrap(T val) {
     return val;
   };
-  static inline T unwrap(T val) {
+  inline static T unwrap(T val) {
     return val;
   };
 };
 
 template <class T>
 struct pod_return_adapter {
-  using abi_type = storage_t<T>;
+  using abi_type = std::conditional_t<std::is_const_v<T>,
+                                      std::add_const_t<storage_t<T>>,
+                                      storage_t<T>>;
   inline static abi_type& wrap(T&& val) {
     assert_equal_layout();
     return *std::launder(reinterpret_cast<abi_type*>(&val));
@@ -176,7 +178,6 @@ struct pod_return_adapter {
     assert_equal_layout();
     return *std::launder(reinterpret_cast<T*>(&val));
   }
-
  private:
   inline static void assert_equal_layout() {
     static_assert(std::is_pod_v<abi_type>, "not a POD type");
