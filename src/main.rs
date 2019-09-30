@@ -24,6 +24,12 @@ struct Rets {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Foo {
+  a: i32,
+}
+
+#[repr(C)]
 struct class_new_0<T: 'static>(
   extern "C" fn() -> std::pin::Pin<&'static mut T>,
   extern "C" fn(&mut std::mem::MaybeUninit<T>) -> &mut T,
@@ -56,7 +62,19 @@ extern "C" {
   static CC_construct:
     extern "C" fn(&mut std::mem::MaybeUninit<CC>, *mut [i32; 10]);
   static CC_fifth: extern "C" fn(&CC) -> &mut i32;
+  static reverse_roles: extern "C" fn(&mut i32) -> ();
 }
+
+#[no_mangle]
+pub extern "C" fn do_call_me_pls_rs(a: &mut i32) -> Foo {
+  println!("Called back!");
+  *a += 1;
+  *a *= 2;
+  Foo { a: 99 }
+}
+
+#[no_mangle]
+pub static call_me_pls: extern "C" fn(&mut i32) -> Foo = do_call_me_pls_rs;
 
 #[allow(unused_variables)]
 fn main() {
@@ -94,5 +112,7 @@ fn main() {
     let mut cc = cc.assume_init();
     let f = CC_fifth(&cc);
     println!("fifth {}", *f);
+    let mut a = 4i32;
+    reverse_roles(&mut a);
   }
 }
