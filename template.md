@@ -32,21 +32,8 @@ namespace ns {
 
 ```cpp
 namespace c_abi {
-  template <class T> 
-  struct POD: std::aligned_storage<sizeof(T), alignof(T)> {
-    inline static POD& wrap(T& v) {
-      return *std::launder(reinterpret_cast<POD*>(&v));
-    }
-    inline static T& unwrap(POD& v) {
-      return *std::launder(reinterpret_cast<T*>(&v));
-    }
-  };
-
-  template <class T>
-  using Uninit = POD<T>;
-
-  template <class T>
-  using ReturnValue = POD<T>;
+  template<class T> class uninit_t { /* ... */ } 
+  template<class T> class return_t { /* ... */ } 
 }
 ```
 
@@ -54,7 +41,7 @@ namespace c_abi {
 
 ```cpp
 extern "C" {
-  void ns__SomeClass__CTOR(::c_abi::Uninit<ns__SomeClass>& self, int arg);
+  void ns__SomeClass__CTOR(::c_abi::uninit_t<ns__SomeClass>& self, int arg);
   void ns__SomeClass__DTOR(SomeClass& self);
 
   int ns__SomeClass__StaticMethod1(void);
@@ -63,20 +50,20 @@ extern "C" {
   void ns__SomeClass__MutMethod(ns__SomeClass& self);
   int ns__SomeClass__ConstMethod(const ns__SomeClass& self, int arg);
 
-  ::c_abi::ReturnValue<ns__SomeData> ns__SomeClass__MethodReturningObject(ns__SomeClass& self);
+  ::c_abi::return_t<ns__SomeData> ns__SomeClass__MethodReturningObject(ns__SomeClass& self);
 
   ns__SomeData& ns__SomeClass__MethodWithRefs(ns__SomeClass& self, const ns__SomeClass& arg);
   ns__SomeData* ns__SomeClass__MethodWithSmartPtrs(ns__SomeClass& self, const ns__SomeData* arg);
 
   int ns__SomeClass__VirtualMethod(ns__SomeClass& self, int arg);
-  int ns__SomeClass__VirtualMethod__DEFAULT(ns__SomeClass& self, int arg);
+  int ns__SomeClass__VirtualMethod__BASE(ns__SomeClass& self, int arg);
 }
 ```
 
 ```rust
 extern "C" {
   fn ns__SomeClass__CTOR(this: &mut std::mem::MaybeUninit<ns::SomeClass> self, arg: i32) -> ();
-  fn ns__SomeClass__DTOR(this: &mut SomeClass);
+  fn ns__SomeClass__DTOR(this: &mut SomeClass) -> ();
 
   fn ns__SomeClass__StaticMethod1() -> i32;
   fn ns__SomeClass__StaticMethod2(arg: i32) -> ();
@@ -90,7 +77,7 @@ extern "C" {
   fn ns__SomeClass__MethodWithSmartPtrs(this: &mut ns::SomeClass, arg: &ns::SomeData) -> *mut ns::SomeData;
 
   fn ns__SomeClass__VirtualMethod(this: &mut ns::SomeClass, arg: i32) -> i32;
-  fn ns__SomeClass__VirtualMethod__DEFAULT(this: &mut ns::SomeClass, arg: i32) -> i32;
+  fn ns__SomeClass__VirtualMethod__BASE(this: &mut ns::SomeClass, arg: i32) -> i32;
 }
 ```
 
