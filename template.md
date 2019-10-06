@@ -1,4 +1,3 @@
-
 ## Existing API (e.g. defined in v8.h)
 
 ```cpp
@@ -117,34 +116,39 @@ extern "C" {
   int v8__UserClass__VirtualMethod(::v8::UserClass& self, int arg) {
     return self.VirtualMethod(arg);
   }
-
   // If the embedder chooses not to override a virtual method (assuming it's
   // not a pure virtual method), it must have a way to call the default
   // implementation specified by the base class.
   int v8__UserClass__UserClass__VirtualMethod(::v8::UserClass& self, int arg) {
     return self.::v8::UserClass:VirtualMethod(arg);
   }
-
   size_t v8__UserClass__PureVirtualMethod(const ::v8::UserClass& self) {
     return self.PureVirtualMethod();
   }
+
+  void DERIVED__v8__UserClass__CTOR(::c_abi::uninit_t<::DERIVED::v8::UserClass>& self) {
+    new (&self) ::v8::SomeClass(arg);
+  }
 }
 
-namespace DERIVE {
+namespace DERIVED {
 namespace v8 {
   class UserClass;
 }
 }
 
 extern "C" {
-  void DERIVE__v8__UserClass__DTOR()
-  int DERIVE__v8__UserClass__VirtualMethod(
-      ::DERIVE::v8::UserClass& self, int arg);
-  size_t DERIVE__v8__UserClass__PureVirtualMethod(
-      const ::DERIVE::v8::UserClass&);
+  size_t OVERRIDE__v8__UserClass__DTOR(
+      ::DERIVED::v8::UserClass& self);
+  size_t OVERRIDE__v8__UserClass__DELETE(
+      ::c_abi::uninit_t<::DERIVED::v8::UserClass>& self);
+  int OVERRIDE__v8__UserClass__VirtualMethod(
+      ::DERIVED::v8::UserClass& self, int arg);
+  size_t OVERRIDE__v8__UserClass__PureVirtualMethod(
+      const ::DERIVED::v8::UserClass&);
 }
 
-namespace DERIVE {
+namespace DERIVED {
 namespace v8 {
   // The actual size of classes that are extended in rust is not known in C++,
   // rust derivate may add any number of data fields to it. Therefore they
@@ -155,18 +159,21 @@ namespace v8 {
     UserClass() = delete;
 
   public:
-    // TODO: constructor?
-
     virtual ~UserClass() {
-      DERIVE__v8__UserClass__DTOR(*this);
+      OVERRIDE__v8__UserClass__DTOR(*this);
+    };
+
+    static void operator delete(void* ptr) {
+      auto& mem = *reinterpret_cast<::c_abi::uninit_t<UserClass>*>(ptr);
+      OVERRIDE__v8__UserClass__DELETE(mem);
     }
 
     int VirtualMethod(int arg) override {
-      return DERIVE__v8__UserClass__VirtualMethod(arg);  
+      return OVERRIDE__v8__UserClass__VirtualMethod(*self, arg);
     }
 
     size_t PureVirtualMethod() const override {
-      return DERIVE__v8__UserClass__PureVirtualMethod();
+      return OVERRIDE__v8__UserClass__PureVirtualMethod(*self);
     }
   };
 }
@@ -178,7 +185,7 @@ namespace v8 {
 ```rust
 extern "C" {
   fn v8__SomeClass__CTOR(this: &mut std::mem::MaybeUninit::<v8::SomeClass> self, arg: i32) -> ();
-  fn v8__SomeClass__DTOR(this: &mut SomeClass) -> ();
+  fn v8__SomeClass__DTOR(this: &mut v8::SomeClass) -> ();
 
   fn v8__SomeClass__StaticMethod1() -> i32;
   fn v8__SomeClass__StaticMethod2(arg: i32) -> ();
@@ -194,6 +201,9 @@ extern "C" {
   fn v8__UserClass__VirtualMethod(this: &mut v8::UserClass, arg: i32) -> i32;
   fn v8__UserClass__UserClass__VirtualMethod(this: &mut v8::UserClass, arg: i32) -> i32;
   fn v8__UserClass__PureVirtualMethod(this: &v8::UserClass& self) -> usize;
+
+  fn DERIVED__v8__UserClass__CTOR(this: &mut std::mem::MaybeUninit<v8::user_class::Derived>);
+  fn DERIVED__v8__UserClass__DTOR(this: &mut v8::user_class::Derived);
 }
 ```
 
@@ -260,6 +270,7 @@ mod v8 {
   pub mod user_class {
     pub use super::*;
 
+    #[repr(C)]
     pub struct UserClass([usize; 3]);
 
     impl UserClass {
@@ -271,12 +282,120 @@ mod v8 {
       }
     }
 
-    pub struct Derive {
-      
+    impl std::ops::Drop for UserClass {
+      fn drop(&mut self) -> () {
+        v8__SomeClass__DTOR(self);
+      }
     }
 
-    extern "C" fn DERIVE__v8__UserClass__VirtualMethod(this: &mut v8::UserClass, arg: i32) -> i32;
-    extern "C" fn DERIVE__v8__UserClass__PureVirtualMethod(this: &v8::UserClass& self) -> usize;
+    pub type Derived = Extend<[u8; 0]>;
+
+    pub struct Extend where Self: Override {
+      base: UserClass,
+      overrides: ManuallyDrop<*const dyn Override>,
+      data: ManuallyDrop<<Self as Override>::Data>
+    };
+
+    struct ExtendUninit<T> {
+      use std::mem::{MaybeUninit, ManuallyDrop>;
+      base: MaybeUninit<UserClass>,
+      overrides: MaybeUninit<ManuallyDrop<*const dyn Override>>,
+      data: MaybeUnininit<ManuallyDrop<T>>
+    }
+
+    impl ExtendUninit<T> {
+      use std::mem::MaybeUninit;
+      fn new() -> Self {
+        Self {
+          base: MaybeUninit::uninit(),
+          vtable: MaybeUninit::uninit(),
+          data: MaybeUninit::uninit(),
+        }
+      }
+      unsafe fn init<FnB, FnV, FnD>(&mut self, b: FnV, v: FnO, d: FnD) -> () where
+        FnB: FnOnce(&mut MaybeUninit<UserClass>) -> (),
+        FnV: FnOnce(&mut MaybeUninit<*const dyn Override>) -> (),
+        FnD: FnOnce(&mut MaybeUninit<T>) -> ()> {
+          b(&mut self.base);
+          v(&mut self.vtable);
+          d(&mut self.data)
+        }
+    }
+
+    impl Extend where Self: Override {
+      pub fn base(&self) -> &UserClass {
+        &self.base
+      }
+      pub fn base_mut(&self) -> &mut UserClass {
+        &mut self.base
+      }
+      pub fn new(data: T) -> Box<Self> {
+        let alloc = Box::new(ExtendMaybeUninit::<Self::Data>::new());
+        let vtable: *const dyn Override = unsafe {
+          let temp: &Self = std::mem::transmute(alloc);
+          let temp: &dyn Override = temp;
+          std::mem::transmute(temp)
+        };
+        mem.init(|m| DERIVED__v8__UserClass__CTOR(m),
+                 |m| *m = MaybeUninit::new(vtable),
+                 |m| *m = MaybeUninit::new(data));
+        unsafe { std::mem::transmute() }
+      }
+      fn dtor(&mut self) {
+
+      }
+    }
+
+    impl std::ops::Deref for Extend {
+      type Target = <Extend as Override>::Data;
+      fn deref(&self) -> &Self::Target {
+        &self.data
+      }
+    }
+
+    impl std::ops::DerefMut for Extend {
+      fn deref_mut(&self) -> &mut <Self as Deref>::Target {
+        &self.data
+      }
+    }
+
+    pub trait Override where Self: AsRef<Extend> {
+      pub type Data;
+
+      pub fn dtor(&mut self) -> () {
+        ManuallyDrop::drop(&mut self.data);
+        ManuallyDrop::drop(&mut self.overrides);
+      }
+
+      pub fn VirtualMethod(&mut self, arg: i32) -> i32 {
+        v8__UserClass__UserClass__VirtualMethod(self.base_mut(), arg)
+      }
+
+      pub fn PureVirtualMethod(&self) -> usize {
+        v8__UserClass__PureVirtualMethod(self)
+      }
+    }
+
+    #[no_mangle]
+    extern "C" fn OVERRIDE__v8__UserClass__DTOR(this: &mut v8::user_class::Derive) -> void {
+      // Drop happens.
+    }
+    #[no_mangle]
+    extern "C" fn OVERRIDE__v8__UserClass__DELETE(mem: Box<std::mem::MaybeUninit::<v8::user_class::Derive>>) -> void {
+      // Drop happens.
+    }
+    #[no_mangle]
+    extern "C" fn OVERRIDE__v8__UserClass__VirtualMethod(this: &mut v8::user_class::Derive, arg: i32) -> i32 {
+      unsafe { this.vtable.VirtualMethod(std::mem::transmute(this), arg) }
+    }
+    #[no_mangle]
+    extern "C" fn OVERRIDE__v8__UserClass__PureVirtualMethod(this: &v8::user_class::Derive) -> usize {
+      unsafe { this.vtable.PureVirtualMethod(std::mem::transmute(this)) }
+    }
+
+    pub struct UserClass {
+      base: UserClass,
+    }
 
     pub trait Derive {
       // Non-pure virtual method has default impl.
