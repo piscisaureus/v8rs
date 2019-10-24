@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::mem::drop;
@@ -104,7 +103,7 @@ impl<'a, S> Drop for ScopeRef<'a, S> {
 struct Local<'sc> {
   label: &'static str,
   val: i32,
-  parent_scope: ScopeRef<'sc, V8HandleScope>,
+  _handle_scope: ScopeRef<'sc, V8HandleScope>,
 }
 
 impl<'sc> Local<'sc> {
@@ -113,7 +112,7 @@ impl<'sc> Local<'sc> {
     Self {
       label,
       val: 0,
-      parent_scope: ScopeRef::new(scope),
+      _handle_scope: ScopeRef::new(scope),
     }
   }
 
@@ -154,6 +153,9 @@ fn main() {
       //F let _fail = Local::new(scope1); // fail: scope1 locked by scope2
       //F let _fail = Local::new(scope2); // fail: scope2 locked by scope3
 
+      // Should be allowed.
+      drop(local_b_in_scope2);
+
       // The borrow checker allows us to drop a scope while a local that
       // is contained in it is still alive. To stay safe, `Scope<T>`
       // maintains a reference counter. The scope's interior will not
@@ -179,7 +181,6 @@ fn main() {
 
     // pass: scope2 and all it's locals dropped, scope1 accessible again.
     drop(local_a_in_scope2);
-    drop(local_b_in_scope2);
     drop(scope2);
     let local_c_in_scope1 = Local::new(&mut scope1, "local_c_in_scope1");
   }
