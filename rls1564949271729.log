@@ -1,0 +1,9 @@
+thread 'request-worker-4' panicked at 'byte index 586 is not a char boundary; it is inside 'á' (bytes 585..587) of `use std::cell::Cell;
+use std::marker::PhantomData;
+
+                                                   struct V8Isolate {}
+struct V8HandleScope {}
+
+                                                                     struct Scope<'a, S, P> {
+    parent: Op`[...]', src\libcore\str\mod.rs:2039:5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace.

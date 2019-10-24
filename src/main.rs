@@ -1,106 +1,184 @@
 use std::cell::Cell;
+use std::cell::UnsafeCell;
 use std::marker::PhantomData;
+use std::mem::drop;
+use std::mem::transmute;
+use std::mem::ManuallyDrop;
+use std::mem::MaybeUninit;
 
 // Dummy placeholders representing raw v8 objects.
 struct V8Isolate {}
 struct V8HandleScope {}
 
+trait ScopeImpl {}
+
 // Scope that controls access to the Isolate and active HandleScope.
-struct Scope<'a, S, P> {
-    parent: Option<&'a mut P>,
-    v8_object: Cell<S>, // container for raw v8 Isolate or HandleScope.
+struct ScopeData<'a, S> {
+    label: &'static str,
+    parent: Option<&'a dyn ScopeImpl>,
+    ref_count: usize,
+    v8_object: S, // container for raw v8 Isolate or HandleScope.
 }
 
-impl<'a> Scope<'a, V8Isolate, ()> {
+impl<'a, S> Drop for ScopeData<'a, S> {
+    fn drop(&mut self) {
+        println!("drop inner {}", self.label);
+    }
+}
+
+type ScopeInner<'a, S> = UnsafeCell<ManuallyDrop<ScopeData<'a, S>>>;
+
+// Scope that controls access to the Isolate and active HandleScope.
+struct Scope<'a, S>(ScopeInner<'a, S>);
+
+impl<'a, S> ScopeImpl for Scope<'a, S> {}
+
+impl<'a> Scope<'a, V8Isolate> {
     fn new_isolate() -> Self {
-        Scope {
+        println!("new isolate");
+        Self(UnsafeCell::new(ManuallyDrop::new(ScopeData {
+            label: "isolate",
             parent: None,
-            v8_object: Cell::new(V8Isolate {}),
+            ref_count: 1,
+            v8_object: V8Isolate {},
+        })))
+    }
+}
+
+impl<'a, S> Scope<'a, S> {
+    fn new_handle_scope<'n>(&'n mut self, label: &'static str) -> Scope<'n, V8HandleScope> {
+        println!("new {}", label);
+        Self(UnsafeCell::new(ManuallyDrop::new(ScopeData {
+            label,
+            parent: Some(self),
+            ref_count: 1,
+            v8_object: V8HandleScope {},
+        })))
+    }
+
+    fn data(&self) -> &ScopeData<'a, S> {
+        unsafe { &mut *self.0.get() }
+    }
+
+    fn ref_count_inc(inner: &ScopeInner<'a, S>) {
+        let data = unsafe { &mut *inner.get() };
+        data.ref_count += 1;
+        println!("  ++{} -> {}", data.label, data.ref_count);
+    }
+
+    fn ref_count_dec(inner: &ScopeInner<'a, S>) {
+        let data = unsafe { &mut *inner.get() };
+        data.ref_count -= 1;
+        println!("  --{} -> {}", data.label, data.ref_count);
+        if data.ref_count == 0 {
+            unsafe { ManuallyDrop::drop(data) }
         }
     }
 }
 
-impl<'a, S, P> Scope<'a, S, P> {
-    fn new_handle_scope<'n>(&'n mut self) -> Scope<'n, V8HandleScope, Self> {
-        Scope {
-            parent: Some(self),
-            v8_object: Cell::new(V8HandleScope {}),
-        }
+impl<'a, S> Drop for Scope<'a, S> {
+    fn drop(&mut self) {
+        println!("drop {}", self.data().label);
+        Self::ref_count_dec(&self.0);
     }
+}
 
-    fn drop(self) {}
+struct ScopeRef<'a, S>(&'a ScopeInner<'a, S>);
+
+impl<'a, S> ScopeRef<'a, S> {
+    fn new(scope: &mut Scope<'a, S>) -> Self {
+        Scope::ref_count_inc(&scope.0);
+        Self(unsafe { transmute(&scope.0) })
+    }
+}
+
+impl<'a, S> Drop for ScopeRef<'a, S> {
+    fn drop(&mut self) {
+        Scope::ref_count_dec(self.0);
+    }
 }
 
 struct Local<'sc> {
+    label: &'static str,
     val: i32,
-    scope: PhantomData<&'sc V8HandleScope>,
+    parent_scope: ScopeRef<'sc, V8HandleScope>,
 }
 
 impl<'sc> Local<'sc> {
-    fn new<P>(_: &mut Scope<'sc, V8HandleScope, P>) -> Self {
+    fn new(scope: &mut Scope<'sc, V8HandleScope>, label: &'static str) -> Self {
+        println!("new {}", label);
         Self {
+            label,
             val: 0,
-            scope: PhantomData,
+            parent_scope: ScopeRef::new(scope),
         }
     }
 
-    fn alive(&self) {}
+    fn alive(&self) {
+        println!("alive {}", self.label);
+    }
+}
+
+impl<'sc> Drop for Local<'sc> {
+    fn drop(&mut self) {
+        println!("drop {}", self.label);
+    }
 }
 
 #[allow(unused_variables)]
 fn main() {
-    let local_in_scope3;
+    let mut isolate = Scope::new_isolate();
 
-    let ref mut isolate = Scope::new_isolate();
-
-    let ref mut scope1 = isolate.new_handle_scope();
-    let local_a_in_scope1 = Local::new(scope1);
-    let local_b_in_scope1 = Local::new(scope1);
+    let mut scope1 = isolate.new_handle_scope("scope1");
+    let local_a_in_scope1 = Local::new(&mut scope1, "local_a_in_scope1");
+    let local_b_in_scope1 = Local::new(&mut scope1, "local_b_in_scope1");
 
     {
-        let ref mut scope2 = scope1.new_handle_scope();
-        let local_a_in_scope2 = Local::new(scope2);
-        let local_b_in_scope2 = Local::new(scope2);
+        let mut scope2 = scope1.new_handle_scope("scope2");
+        let local_a_in_scope2 = Local::new(&mut scope2, "local_a_in_scope2");
+        let local_b_in_scope2 = Local::new(&mut scope2, "local_b_in_scope2");
 
         // fail: scope1 is made inaccessible by scope2's existence.
-        let mut _fail = scope1.new_handle_scope();
+        //F let mut _fail = scope1.new_handle_scope();
         // fail: same reason.
-        let _fail = Local::new(scope1);
+        //F let _fail = Local::new(scope1);
 
         {
-            let mut scope3 = scope2.new_handle_scope();
-            local_in_scope3 = Local::new(&mut scope3);
+            let mut scope3 = scope2.new_handle_scope("scope3");
+            let local_in_scope3 = Local::new(&mut scope3, "local_in_scope3");
 
-            let _fail = Local::new(scope1); // fail: scope1 locked by scope2
-            let _fail = Local::new(scope2); // fail: scope2 locked by scope3
+            //F let _fail = Local::new(scope1); // fail: scope1 locked by scope2
+            //F let _fail = Local::new(scope2); // fail: scope2 locked by scope3
 
             // **BUG**: this is accepted but should not, because
             // local_in_scope3 is stil alive.
-            scope3.drop();
+            drop(scope3);
 
             // fail: scope2 still locked because local_in_scope3 is alive,
             // so scope3 must be alive.
-            let _fail = Local::new(scope2);
+            //F let _fail = Local::new(scope2);
 
             local_in_scope3.alive();
 
-            // pass: local_in_scope3 not used after this, so it can drop
-            // => therefore, scope3 can drop
-            // => therefore, scope2 can be used again.
-            let local_c_in_scope2 = Local::new(scope2);
+            // pass: after dropping local_in_scope3, scope2 can be used again.
+            drop(local_in_scope3);
+            let local_c_in_scope2 = Local::new(&mut scope2, "local_c_in_scope2");
         }
 
         // fail: scope1 not accessible, because local_a_in_scope2 is keeping
         // scope2 alive.
-        let _fail = Local::new(scope1);
+        // let _fail = Local::new(scope1);
 
         local_a_in_scope2.alive();
 
-        // pass: local_a_in_scope2 can drop, scope1 accessible again.
-        let local_c_in_scope1 = Local::new(scope1);
+        // pass: scope2 and all it's locals dropped, scope1 accessible again.
+        drop(local_a_in_scope2);
+        drop(local_b_in_scope2);
+        drop(scope2);
+        let local_c_in_scope1 = Local::new(&mut scope1, "local_c_in_scope1");
     }
 
-    let local_c_in_scope1 = Local::new(scope1);
+    let local_d_in_scope1 = Local::new(&mut scope1, "local_d_in_scope1");
     local_a_in_scope1.alive();
 
     // Uncommenting this should make all scope1/scope2 uses after
