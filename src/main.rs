@@ -2,25 +2,45 @@ use std::marker::PhantomData;
 
 struct Isolate(*mut [u8; 0]);
 
+struct ScopeOuter<'p, D, P> {
+    data: ScopeData<'p, D, P>,
+    guard: Option<Guard<'p, ScopeData<'p, D, P>>>,
+}
+
+impl<'p, D, P> ScopeOuter<'p, D, P> where Self: 'p {}
+
 struct ScopeData<'p, D, P> {
     data: D,
     parent: &'p P,
 }
 
-impl<'p, D, P> ScopeData<'p, D, P> {
-    pub fn new(guard: &'p mut Guard<'_, P>, data: D) -> Self {
+impl<'p, D, P> ScopeOuter<'p, D, P> {
+    pub fn new(parent: &'p mut Guard<'_, P>, data: D) -> Self {
         Self {
-            data,
-            parent: guard.inner(),
+            data: ScopeData {
+                data,
+                parent: parent.inner(),
+            },
+            guard: Option::None,
         }
+    }
+
+    pub fn enter(&'_ mut self) -> &'_ mut Guard<'p, ScopeData<'p, D, P>> {
+        if self.guard.is_none() {
+            self.guard = Some(Guard::new(unsafe { std::mem::transmute(&self.data) }));
+        }
+        self.guard.as_mut().unwrap()
     }
 }
 
-impl<'p> ScopeData<'p, Isolate, None> {
+impl<'p> ScopeOuter<'p, Isolate, None> {
     pub fn new_root(data: Isolate) -> Self {
         Self {
-            data,
-            parent: &None,
+            data: ScopeData {
+                data,
+                parent: &None,
+            },
+            guard: Option::None,
         }
     }
 }
@@ -37,57 +57,69 @@ impl<'p, D, P> std::ops::Deref for ScopeData<'p, D, P> {
 }
 
 impl Isolate {
-    pub fn new<'p>() -> ScopeData<'p, Self, None> {
-        ScopeData::new_root(Self(std::ptr::null_mut()))
+    pub fn new<'p>() -> ScopeOuter<'p, Self, None> {
+        ScopeOuter::new_root(Self(std::ptr::null_mut()))
     }
 }
 
 struct Locker {}
 impl Locker {
-    pub fn new<'p, P>(guard: &'p mut Guard<'_, P>) -> ScopeData<'p, Self, P> {
-        ScopeData::new(guard, Self {})
+    pub fn new<'p, P>(guard: &'p mut Guard<'_, P>) -> ScopeOuter<'p, Self, P> {
+        ScopeOuter::new(guard, Self {})
     }
 }
 
 struct Unlocker {}
 impl Unlocker {
-    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeData<'p, Self, P> {
-        ScopeData::new(guard, Self {})
+    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeOuter<'p, Self, P> {
+        ScopeOuter::new(guard, Self {})
     }
 }
 
 struct HandleScope {}
 impl HandleScope {
-    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeData<'p, Self, P> {
-        ScopeData::new(guard, Self {})
+    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeOuter<'p, Self, P> {
+        ScopeOuter::new(guard, Self {})
     }
 }
 
 struct EscapableHandleScope {}
 impl EscapableHandleScope {
-    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeData<'p, Self, P> {
-        ScopeData::new(guard, Self {})
+    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeOuter<'p, Self, P> {
+        ScopeOuter::new(guard, Self {})
+    }
+}
+
+impl<'p, P> ScopeOuter<'p, EscapableHandleScope, P>
+where
+    P: Scope + HasHandles,
+{
+    pub fn escape<'e, T, S>(&mut self, local: Local<'_, T, S>) -> Local<'e, T, P::HandleScope>
+    where
+        P::HandleScope: 'e,
+    {
+        unsafe { std::mem::transmute(local) }
     }
 }
 
 struct SealHandleScope {}
 impl SealHandleScope {
-    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeData<'p, Self, P> {
-        ScopeData::new(guard, Self {})
+    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeOuter<'p, Self, P> {
+        ScopeOuter::new(guard, Self {})
     }
 }
 
 struct TryCatch {}
 impl TryCatch {
-    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeData<'p, Self, P> {
-        ScopeData::new(guard, Self {})
+    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeOuter<'p, Self, P> {
+        ScopeOuter::new(guard, Self {})
     }
 }
 
 struct ContextScope {}
 impl ContextScope {
-    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeData<'p, Self, P> {
-        ScopeData::new(guard, Self {})
+    pub fn new<'p, P: HasLock>(guard: &'p mut Guard<'_, P>) -> ScopeOuter<'p, Self, P> {
+        ScopeOuter::new(guard, Self {})
     }
 }
 
@@ -101,18 +133,22 @@ impl<'s, S> Guard<'s, S> {
     pub fn inner(&self) -> &S {
         self.0
     }
+
+    fn exit(self) -> &'s S {
+        self.0
+    }
 }
 
-struct Local<'sc, T> {
+struct Local<'sc, T, S> {
     value: *const T,
-    _scope: PhantomData<&'sc ()>,
+    _scope: &'sc S,
 }
 
-impl<'sc, T> Local<'sc, T> {
-    pub fn new(_scope: &'_ mut impl HandleScopeGuard<'sc>, _value: T) -> Self {
+impl<'sc, T, S> Local<'sc, T, S> {
+    pub fn new(_scope: &'_ mut impl HandleScopeGuard<'sc, Scope = S>, _value: T) -> Self {
         Self {
             value: std::ptr::null(),
-            _scope: PhantomData,
+            _scope: _scope.inner(),
         }
     }
 
@@ -134,33 +170,7 @@ where
     type HandleScope;
     type TryCatch;
     type ContextScope;
-
-    fn enter(&mut self) -> Guard<Self> {
-        Guard::new(self)
-    }
 }
-
-/*
-trait Get<T> {
-    fn get<'t, 's: 't>(scope: &'s Self) -> &'t T;
-}
-
-impl<T> Get<T> for T {
-    fn get<'t, 's: 't>(scope: &'s Self) -> &'t T {
-        scope
-    }
-}
-
-impl<T, S> Get<T> for S
-where
-    Self: Scope,
-    Self::Parent: Get<T>,
-{
-    fn get<'t, 's: 't>(scope: &'s Self) -> &'t T {
-        guard.inner()
-    }
-}
-*/
 
 impl<'p> Scope for ScopeData<'p, Isolate, None> {
     type Locker = None;
@@ -201,7 +211,7 @@ where
 
 impl<'p, P> Scope for ScopeData<'p, EscapableHandleScope, P>
 where
-    P: Scope + 'p,
+    P: Scope + HasHandles + 'p,
 {
     type Locker = P::Locker;
     type HandleScope = Self;
@@ -224,8 +234,8 @@ where
     P: Scope + 'p,
 {
     type Locker = P::Locker;
-    type HandleScope = Self;
-    type TryCatch = P::TryCatch;
+    type HandleScope = P::HandleScope;
+    type TryCatch = Self;
     type ContextScope = P::ContextScope;
 }
 
@@ -234,16 +244,27 @@ where
     P: Scope + 'p,
 {
     type Locker = P::Locker;
-    type HandleScope = Self;
+    type HandleScope = P::HandleScope;
     type TryCatch = P::TryCatch;
-    type ContextScope = P::ContextScope;
+    type ContextScope = Self;
 }
 
 trait LockGuard<'s> {}
 impl<'s, S> LockGuard<'s> for Guard<'s, S> where S: Scope + HasLock + 's {}
 
-trait HandleScopeGuard<'s> {}
-impl<'s, S> HandleScopeGuard<'s> for Guard<'s, S> where S: Scope + HasLock + HasHandles + 's {}
+trait HandleScopeGuard<'s> {
+    type Scope;
+    fn inner(&mut self) -> &'s Self::Scope;
+}
+impl<'s, S> HandleScopeGuard<'s> for Guard<'s, S>
+where
+    S: Scope + HasLock + HasHandles + 's,
+{
+    type Scope = S;
+    fn inner(&mut self) -> &'s S {
+        self.inner()
+    }
+}
 
 //impl<'s, S> HasContext for Guard<'s, S> where S: Scope + HasLock + HasContext {}
 //impl<'s, S> HasTryCatch for Guard<'s, S> where S: Scope + HasLock + HasHandles + HasTryCatch {}
@@ -272,10 +293,19 @@ impl<'p, P: Scope + 'p> HasHandles for ScopeData<'p, HandleScope, P> {}
 impl<'p, P: Scope + 'p> HasContext for ScopeData<'p, HandleScope, P> where P: HasContext {}
 impl<'p, P: Scope + 'p> HasTryCatch for ScopeData<'p, HandleScope, P> where P: HasTryCatch {}
 
-impl<'p, P: Scope + 'p> HasLock for ScopeData<'p, EscapableHandleScope, P> where P: HasLock {}
-impl<'p, P: Scope + 'p> HasHandles for ScopeData<'p, EscapableHandleScope, P> {}
-impl<'p, P: Scope + 'p> HasContext for ScopeData<'p, EscapableHandleScope, P> where P: HasContext {}
-impl<'p, P: Scope + 'p> HasTryCatch for ScopeData<'p, EscapableHandleScope, P> where P: HasTryCatch {}
+impl<'p, P: Scope + 'p> HasLock for ScopeData<'p, EscapableHandleScope, P> where
+    P: HasLock + HasHandles
+{
+}
+impl<'p, P: Scope + 'p> HasHandles for ScopeData<'p, EscapableHandleScope, P> where P: HasHandles {}
+impl<'p, P: Scope + 'p> HasContext for ScopeData<'p, EscapableHandleScope, P> where
+    P: HasHandles + HasContext
+{
+}
+impl<'p, P: Scope + 'p> HasTryCatch for ScopeData<'p, EscapableHandleScope, P> where
+    P: HasHandles + HasTryCatch
+{
+}
 
 impl<'p, P: Scope + 'p> HasLock for ScopeData<'p, SealHandleScope, P> where P: HasLock {}
 impl<'p, P: Scope + 'p> HasContext for ScopeData<'p, SealHandleScope, P> where P: HasContext {}
@@ -303,23 +333,45 @@ fn main() {
     // let mut unlocker = Unlocker::new(&mut g);
     // let mut g1 = unlocker.enter();
 
+    let mut hs0 = HandleScope::new(&mut g);
+    let mut g = hs0.enter();
+    let l0 = Local::new(g, 3);
+
     let mut hs1 = HandleScope::new(&mut g);
     let mut g1 = hs1.enter();
-    let mut l1 = Local::new(&mut g1, 1);
-    let mut l2 = Local::new(&mut g1, "a");
+    let mut l1 = Local::new(g1, 1);
+    let mut l2 = Local::new(g1, "a");
 
-    let mut hs2 = HandleScope::new(&mut g1);
-    let i = get_inner::<Isolate, _>(&hs2);
+    let mut cs = ContextScope::new(&mut g1);
+    let mut gs = cs.enter();
 
+    let mut hs2 = EscapableHandleScope::new(&mut gs);
     let mut g2 = hs2.enter();
 
-    let mut l4 = Local::new(&mut g2, "a");
-    let mut l3 = Local::new(&mut g2, 1);
+    let mut l4 = Local::new(g1, "a");
+    let mut l3 = Local::new(g2, 1);
 
     l1.print_mut();
     l2.print_mut();
     l3.print_mut();
     l4.print_mut();
 
-    std::mem::drop(locker);
+    let mut le = hs2.escape(l4);
+    //drop(hs2);
+    //drop(gs);
+    //drop(cs);
+
+    ////drop(g1);
+    drop(hs1);
+    //
+    le.print_mut();
+    //let lf1 = Local::new(&mut g1, 55);
+    let mut lf2 = Local::new(g1, "bla");
+    //drop(hs1);
+    //le.print_mut();
+    //
+    //l1.print_mut();
+    // //l3.print_mut();
+    //
+    // std::mem::drop(locker);
 }
