@@ -4,41 +4,67 @@ use std::fmt::{self, Debug, Formatter};
 use std::marker::*;
 use std::mem::*;
 
+mod tag {
+    pub struct Isolate;
+    pub struct HandleScope;
+    pub struct Locker;
+    pub struct ContextScope;
+    pub struct TryCatch;
+}
+
 #[derive(Default, Debug)]
 struct IsolateScope(i32);
-impl Scope for IsolateScope {}
+impl Scope for IsolateScope {
+    type Tag = tag::Isolate;
+}
 
 #[derive(Default, Debug)]
 struct Locker(i32);
-impl Scope for Locker {}
+impl Scope for Locker {
+    type Tag = tag::Locker;
+}
 
 #[derive(Default, Debug)]
 struct Unlocker(i32);
-impl Scope for Unlocker {}
+impl Scope for Unlocker {
+    type Tag = tag::Locker;
+}
 
 #[derive(Default, Debug)]
 struct ContextScope(i32);
-impl Scope for ContextScope {}
+impl Scope for ContextScope {
+    type Tag = tag::ContextScope;
+}
 
 #[derive(Default, Debug)]
 struct TryCatch(i32);
-impl Scope for TryCatch {}
+impl Scope for TryCatch {
+    type Tag = tag::TryCatch;
+}
 
 #[derive(Default, Debug)]
 struct HandleScope(i32);
-impl Scope for HandleScope {}
+impl Scope for HandleScope {
+    type Tag = tag::HandleScope;
+}
 impl OpenHandleScope for HandleScope {}
 
 #[derive(Default, Debug)]
 struct EscapableHandleScope(i32);
-impl Scope for EscapableHandleScope {}
+impl Scope for EscapableHandleScope {
+    type Tag = tag::HandleScope;
+}
 impl OpenHandleScope for EscapableHandleScope {}
 
 #[derive(Default, Debug)]
 struct SealHandleScope(i32);
-impl Scope for SealHandleScope {}
+impl Scope for SealHandleScope {
+    type Tag = tag::HandleScope;
+}
 
 trait Scope: Debug + Default + Sized {
+    type Tag;
+
     fn new<P>(parent: &mut P) -> Frame<Self, P>
     where
         P: ScopeParent,
@@ -67,16 +93,6 @@ where
 {
 }
 
-mod current {
-    use super::*;
-
-    pub trait Isolate {}
-    pub trait Locking {}
-    pub trait Context {}
-    pub trait Handles {}
-    pub trait TryCatch {}
-}
-
 #[derive(Copy, Clone)]
 pub struct TypeRef<T>(PhantomData<T>);
 pub trait ID: Sized {
@@ -103,13 +119,19 @@ where
         Follows::follow(self)
     }
 }
+
+trait TyEq {}
+impl<T> TyEq for (T, T) {}
+
 trait Follows<D, M> {
     type Guard;
     fn follow(&mut self) -> &mut Self::Guard;
 }
-impl<'p, D, P> Follows<D, Match> for Guard<'p, D, P>
+
+impl<'p, D, P, X> Follows<X, Match> for Guard<'p, D, P>
 where
     D: Scope,
+    (D, X): TyEq,
     P: ScopeParent,
 {
     type Guard = Self;
@@ -117,6 +139,7 @@ where
         self
     }
 }
+
 impl<'p, D, P, X, M> Follows<X, Unmatch<M>> for Guard<'p, D, P>
 where
     D: Scope,
