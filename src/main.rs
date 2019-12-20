@@ -4,87 +4,51 @@ use std::fmt::{self, Debug, Formatter};
 use std::marker::*;
 use std::mem::*;
 
-mod tag {
-    pub struct Isolate;
-    pub struct HandleScope;
-    pub struct Locker;
-    pub struct ContextScope;
-    pub struct TryCatch;
-}
-
 #[derive(Default, Debug)]
 struct IsolateScope(i32);
-impl Scope for IsolateScope {
-    type Tag = tag::Isolate;
-}
+impl Scope for IsolateScope {}
 
 #[derive(Default, Debug)]
 struct Locker(i32);
-impl Scope for Locker {
-    type Tag = tag::Locker;
-}
+impl Scope for Locker {}
 
 #[derive(Default, Debug)]
 struct Unlocker(i32);
-impl Scope for Unlocker {
-    type Tag = tag::Locker;
-}
+impl Scope for Unlocker {}
 
 #[derive(Default, Debug)]
 struct ContextScope(i32);
-impl Scope for ContextScope {
-    type Tag = tag::ContextScope;
-}
+impl Scope for ContextScope {}
 
 #[derive(Default, Debug)]
 struct TryCatch(i32);
-impl Scope for TryCatch {
-    type Tag = tag::TryCatch;
-}
+impl Scope for TryCatch {}
 
 #[derive(Default, Debug)]
 struct HandleScope(i32);
-impl Scope for HandleScope {
-    type Tag = tag::HandleScope;
-}
+impl Scope for HandleScope {}
 impl OpenHandleScope for HandleScope {}
 
 #[derive(Default, Debug)]
 struct EscapableHandleScope(i32);
-impl Scope for EscapableHandleScope {
-    type Tag = tag::HandleScope;
-}
+impl Scope for EscapableHandleScope {}
 impl OpenHandleScope for EscapableHandleScope {}
 
 #[derive(Default, Debug)]
 struct SealHandleScope(i32);
-impl Scope for SealHandleScope {
-    type Tag = tag::HandleScope;
-}
+impl Scope for SealHandleScope {}
 
 trait Scope: Debug + Default + Sized {
-    type Tag;
-
     fn new<P>(parent: &mut P) -> Frame<Self, P>
     where
-        P: ScopeParent,
+        P: Debug,
     {
         Frame::new(parent)
     }
 
-    fn enter<P>(buf: &mut MaybeUninit<Self>, _parent: &mut P)
-    where
-        P: ScopeParent,
-    {
+    fn enter<P>(buf: &mut MaybeUninit<Self>, _parent: &mut P) {
         *buf = MaybeUninit::new(Default::default())
     }
-}
-
-trait ScopeParent
-where
-    Self: Debug,
-{
-    type Data;
 }
 
 trait OpenHandleScope
@@ -93,102 +57,33 @@ where
 {
 }
 
-#[derive(Copy, Clone)]
-pub struct TypeRef<T>(PhantomData<T>);
-pub trait ID: Sized {
-    const ID: TypeRef<Self>;
-}
-impl<T> ID for T {
-    const ID: TypeRef<T> = TypeRef(PhantomData);
-}
-
-#[allow(dead_code)]
-struct Match;
-#[allow(dead_code)]
-struct Unmatch<Next>(Next);
-
-impl<'p, D, P> Guard<'p, D, P>
-where
-    D: Scope,
-    P: ScopeParent,
-{
-    fn get<X, M>(&mut self, _: TypeRef<X>) -> &mut <Self as Follows<X, M>>::Guard
-    where
-        Self: Follows<X, M>,
-    {
-        Follows::follow(self)
-    }
-}
-
-trait TyEq {}
-impl<T> TyEq for (T, T) {}
-
-trait Follows<D, M> {
-    type Guard;
-    fn follow(&mut self) -> &mut Self::Guard;
-}
-
-impl<'p, D, P, X> Follows<X, Match> for Guard<'p, D, P>
-where
-    D: Scope,
-    (D, X): TyEq,
-    P: ScopeParent,
-{
-    type Guard = Self;
-    fn follow(&mut self) -> &mut Self::Guard {
-        self
-    }
-}
-
-impl<'p, D, P, X, M> Follows<X, Unmatch<M>> for Guard<'p, D, P>
-where
-    D: Scope,
-    P: ScopeParent + Follows<X, M>,
-{
-    type Guard = <P as Follows<X, M>>::Guard;
-    fn follow(&mut self) -> &mut Self::Guard {
-        self.parent.follow()
-    }
-}
-
 #[derive(Default, Debug)]
 struct Bottom;
-impl ScopeParent for Bottom {
-    type Data = ();
-}
 
 #[derive(Debug)]
 struct Guard<'p, D, P>
 where
-    P: ScopeParent,
     D: Scope,
+    P: Debug,
 {
     parent: &'p mut P,
     data: &'p D,
 }
 
-impl<'p, D, P> ScopeParent for Guard<'p, D, P>
-where
-    P: ScopeParent,
-    D: Scope,
-{
-    type Data = D;
-}
-
 impl<'p, D, P> Guard<'p, D, P>
 where
-    P: ScopeParent,
     D: Scope,
+    P: Debug,
 {
-    fn new(parent: &'p mut P, data: &'p D) -> Self {
+    fn new(data: &'p D, parent: &'p mut P) -> Self {
         dump_ret("Guard::new", Self { parent, data })
     }
 }
 
 impl<'p, D, P> Drop for Guard<'p, D, P>
 where
-    P: ScopeParent,
     D: Scope,
+    P: Debug,
 {
     fn drop(&mut self) {
         dump("Guard::drop", self);
@@ -215,8 +110,8 @@ fn dump_ret<T: Debug>(m: &'static str, t: T) -> T {
 
 impl<'p, D, P> Frame<'p, D, P>
 where
-    P: ScopeParent,
     D: Scope,
+    P: Debug,
 {
     fn new(parent: &'p mut P) -> Self {
         dump_ret("Frame::new", Self::Config(parent))
@@ -251,7 +146,7 @@ where
         let data_ptr = data as *const _;
 
         assert_eq!(uninit_data_ptr, data_ptr);
-        Guard::new(parent, data)
+        Guard::new(data, parent)
     }
 }
 
@@ -281,7 +176,7 @@ where
 {
     pub fn new<P>(parent: &'_ mut Guard<'p, D, P>, value: T) -> Self
     where
-        P: ScopeParent,
+        P: Debug,
     {
         dump_ret(
             "Local::new",
@@ -339,8 +234,6 @@ fn main1() {
     let mut hs2 = HandleScope::new(&mut ghs1);
     let mut ghs2 = hs2.enter();
 
-    let v = ghs2.get(Locker::ID);
-
     let l2a = Local::new(&mut ghs2, "2a");
     let l2b = Local::new(&mut ghs2, "2b");
 
@@ -385,3 +278,128 @@ fn main1() {
     l2a.print();
     l3b.print();
 }
+
+#[derive(Debug, Default)]
+struct Nothing;
+impl Scope for Nothing {}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+struct CxxIsolate([u8; 0]);
+impl Scope for CxxIsolate {}
+#[repr(C)]
+#[derive(Debug, Default)]
+struct CxxLocker([usize; 3]);
+impl Scope for CxxLocker {}
+#[repr(C)]
+#[derive(Debug, Default)]
+struct CxxHandleScope([usize; 3]);
+impl Scope for CxxHandleScope {}
+#[repr(C)]
+#[derive(Debug, Default)]
+struct CxxEscapableHandleScope([usize; 4]);
+impl Scope for CxxEscapableHandleScope {}
+#[repr(C)]
+#[derive(Debug, Default)]
+struct CxxContextScope([usize; 3]);
+impl Scope for CxxContextScope {}
+#[repr(C)]
+#[derive(Debug, Default)]
+struct CxxTryCatch([usize; 6]);
+impl Scope for CxxTryCatch {}
+
+trait Scope2<'p> {
+    type Data;
+    type Parent;
+    type Guard;
+    fn enter(&'p mut self) -> Self::Guard;
+}
+
+trait NewHandle<T> {
+    type Handle;
+}
+
+impl<'p, D, P> Scope2<'p> for Frame<'p, D, P>
+where
+    D: Scope + 'p,
+    P: Debug,
+{
+    type Parent = P;
+    type Data = D;
+    type Guard = Guard<'p, D, P>;
+
+    fn enter(&'p mut self) -> Self::Guard {
+        self.enter()
+    }
+}
+
+struct IsolateScope2<'p>(&'p CxxIsolate);
+
+impl<'p> IsolateScope2<'p> {
+    pub fn new(isolate: &'p CxxIsolate) -> Self {
+        Self(isolate)
+    }
+}
+
+impl<'p> Scope2<'p> for IsolateScope2<'p> {
+    type Parent = &'p CxxIsolate;
+    type Data = Nothing;
+    type Guard = Guard<'p, Self::Data, Self::Parent>;
+
+    fn enter(&'p mut self) -> Self::Guard {
+        Guard::new(&Nothing, &mut self.0)
+    }
+}
+
+type HandleScope2<'p, P> = Frame<'p, CxxHandleScope, P>;
+
+impl<'p, P, T> NewHandle<T> for HandleScope2<'p, P>
+where
+    Self: Scope2<'p>,
+{
+    type Handle = Local<'p, <Self as Scope2<'p>>::Data, T>;
+}
+
+/*
+struct ScopeBuf<S> where S: ScopeImpl {
+    parent: S::Parent
+    data: S::Data
+}
+
+impl<S> ScopeBuf<S> where S: ScopeImpl {
+    fn new(parent: S::Parent, inner: ScopeBufInner<S>) -> Self {
+        Self{ parent, inner }
+    }
+}
+
+
+
+
+
+trait ScopeImpl {
+    type Parent;
+    type CxxData;
+
+    fn isolate(&self) -> &CxxIsolate;
+    fn isolate_mut(&mut self) -> &mut CxxIsolate;
+}
+
+trait IsolateScope<'p> = Frame<'p, (), &'mut CxxIsolate> {
+    type Parent = &'mut CxxIsolate;
+
+}
+
+trait ScopeImpl: Debug + Default + Sized {
+    fn new<P>(parent: &mut P) -> Frame<Self, P>
+    where
+        {
+        Frame::new(parent)
+    }
+
+    fn enter<P>(buf: &mut MaybeUninit<Self>, _parent: &mut P)
+    where
+        {
+        *buf = MaybeUninit::new(Default::default())
+    }
+}
+*/
