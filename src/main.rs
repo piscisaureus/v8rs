@@ -3,22 +3,17 @@ use std::marker::PhantomData;
 use std::marker::PhantomPinned;
 use std::mem::drop;
 use std::ops::*;
+use std::ptr::NonNull;
 
-struct Dummy<'a>(PhantomData<&'a mut ()>);
-impl<'a> Default for Dummy<'a> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-impl<'a> Drop for Dummy<'a> {
-    fn drop(&mut self) {}
-}
-
+#[derive(Debug)]
 struct ScopeRef<'p, 'a>(&'a mut Scope<'p>);
 
 impl<'p, 'a> Drop for ScopeRef<'p, 'a> {
     fn drop(&mut self) {
-        println!("Scope drop");
+        println!("Scope drop. depth={}, next={:?}", self.depth, self._next);
+        let mut temp = std::ptr::NonNull::<&'a mut Scope<'p>>::dangling();
+        let mut cell = std::mem::replace(&mut self.0, unsafe { std::mem::transmute(temp) });
+        cell._parent.map(|mut v| unsafe { v.as_mut() }._next.take());
     }
 }
 
@@ -34,16 +29,19 @@ impl<'p, 'a> DerefMut for ScopeRef<'p, 'a> {
     }
 }
 
+#[derive(Debug)]
 struct Scope<'a> {
-    _parent: PhantomData<&'a ()>,
+    _parent: Option<NonNull<Scope<'a>>>,
     _next: Option<Box<UnsafeCell<Scope<'a>>>>,
+    depth: usize,
 }
 
 impl<'a> Scope<'a> {
     fn root() -> ScopeRef<'a, 'a> {
         let b = Box::new(Self {
-            _parent: PhantomData,
+            _parent: None,
             _next: None,
+            depth: 0,
         });
         let p = Box::into_raw(b);
         ScopeRef(unsafe { &mut *p })
@@ -51,8 +49,9 @@ impl<'a> Scope<'a> {
 
     fn new<'p: 'a>(parent: &'a mut Scope<'p>) -> ScopeRef<'p, 'a> {
         let b = Box::new(UnsafeCell::new(Scope::<'p> {
-            _parent: PhantomData,
+            _parent: NonNull::new(parent),
             _next: None,
+            depth: parent.depth + 1,
         }));
         let p = unsafe { b.get() };
         parent._next = Some(b);
@@ -114,7 +113,7 @@ fn main() {
                     let wl1 = Local::new(w1);
                 }
                 let w2 = &mut Scope::new(w0);
-                let wl0x = Local::new(w0);
+                //let wl0x = Local::new(w0);
                 let wl2 = Local::new(w2);
                 use_it(&r1);
                 use_it(&r2);
