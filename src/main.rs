@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::cell::UnsafeCell;
@@ -167,14 +168,53 @@ struct ScopeStackItemMeta {
 }
 
 struct For<'t>(PhantomData<&'t ()>);
-type Never = std::convert::Infallible; // Forward compatible.
+struct Never;
+//type Never = std::convert::Infallible; // Forward compatible.
 
-//struct Scope<Handles = Never, Escape = Never, TryCatch = Never> {
-struct Scope<Handles, Escape, TryCatch> {
+struct Scope<Handles = Never, Escape = Never, TryCatch = Never> {
   mgr: Rc<ScopeManager>,
   cookie: u32,
   frames: u32,
   _phantom: PhantomData<(Handles, Escape, TryCatch)>,
+}
+
+impl<'t, Handles, Escape> Deref for Scope<Handles, Escape, For<'t>> {
+  type Target = Scope<Handles, Escape, Never>;
+  fn deref(&self) -> &Self::Target {
+    unsafe { Self::Target::cast(self) }
+  }
+}
+
+impl<'t, Handles, Escape> DerefMut for Scope<Handles, Escape, For<'t>> {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    unsafe { Self::Target::cast_mut(self) }
+  }
+}
+
+impl<'l, 'e> Deref for Scope<For<'l>, For<'e>, Never> {
+  type Target = Scope<For<'l>, Never, Never>;
+  fn deref(&self) -> &Self::Target {
+    unsafe { Self::Target::cast(self) }
+  }
+}
+
+impl<'l, 'e> DerefMut for Scope<For<'l>, For<'e>, Never> {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    unsafe { Self::Target::cast_mut(self) }
+  }
+}
+
+impl<'l> Deref for Scope<For<'l>, Never, Never> {
+  type Target = Scope<Never, Never, Never>;
+  fn deref(&self) -> &Self::Target {
+    unsafe { Self::Target::cast(self) }
+  }
+}
+
+impl<'l> DerefMut for Scope<For<'l>, Never, Never> {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    unsafe { Self::Target::cast_mut(self) }
+  }
 }
 
 impl<Handles, Escape, TryCatch> Scope<Handles, Escape, TryCatch> {
@@ -190,6 +230,18 @@ impl<Handles, Escape, TryCatch> Scope<Handles, Escape, TryCatch> {
       _phantom: PhantomData,
     };
     ScopeRef::new(self_)
+  }
+
+  unsafe fn cast<Handles_, Escape_, TryCatch_>(
+    from: &Scope<Handles_, Escape_, TryCatch_>,
+  ) -> &Self {
+    &*(from as *const _ as *const Self)
+  }
+
+  unsafe fn cast_mut<Handles_, Escape_, TryCatch_>(
+    from: &mut Scope<Handles_, Escape_, TryCatch_>,
+  ) -> &mut Self {
+    &mut *(from as *mut _ as *mut Self)
   }
 }
 
@@ -210,8 +262,8 @@ impl Scope<Never, Never, Never> {
 }
 
 impl<'l, Escape, TryCatch> Scope<For<'l>, Escape, TryCatch> {
-  pub fn with_handles<'a, Handles>(
-    parent: &'a mut Scope<Handles, Escape, TryCatch>,
+  pub fn with_handles<'a, Handles_>(
+    parent: &'a mut Scope<Handles_, Escape, TryCatch>,
   ) -> ScopeRef<'a, For<'l>, Escape, TryCatch> {
     let mgr = parent.mgr.clone();
     let cookie = mgr.shadow(parent.cookie);
@@ -232,8 +284,9 @@ impl<'l, Escape, TryCatch> Scope<For<'l>, Escape, TryCatch> {
 }
 
 impl<'e, TryCatch> Scope<For<'e>, For<'e>, TryCatch> {
-  pub fn with_escape<'a, Escape>(
-    parent: &'a mut Scope<For<'e>, Escape, TryCatch>,
+  #[allow(dead_code)]
+  pub fn with_escape<'a, Escape_>(
+    parent: &'a mut Scope<For<'e>, Escape_, TryCatch>,
   ) -> ScopeRef<'a, For<'e>, For<'e>, TryCatch> {
     let mgr = parent.mgr.clone();
     let cookie = mgr.shadow(parent.cookie);
@@ -302,13 +355,66 @@ impl<'a, Handles, Escape, TryCatch> DerefMut
   }
 }
 
-type TryCatch<'t, Escape = For<'t>, Handles = For<'t>> =
-  Scope<Handles, Escape, For<'t>>;
+pub trait AsScopeRef<'a> {
+  type ScopeRef;
+}
+impl<'a, Handles, Escape, TryCatch> AsScopeRef<'a>
+  for Scope<Handles, Escape, TryCatch>
+{
+  type ScopeRef = ScopeRef<'a, Handles, Escape, TryCatch>;
+}
 
-impl<'t, Escape, Handles> TryCatch<'t, Escape, Handles> {
-  pub fn new<'a, TryCatch>(
-    parent: &'a mut Scope<Handles, Escape, TryCatch>,
-  ) -> ScopeRef<'a, Handles, Escape, For<'t>> {
+trait NewScope<'a, Input>: AsScopeRef<'a> {
+  fn new(parent: &'a mut Input) -> Self::ScopeRef;
+}
+
+type HandleScope<'l> = Scope<For<'l>, Never, Never>;
+
+impl<'a, 'l, Handles_, Escape_, TryCatch>
+  NewScope<'a, Scope<Handles_, Escape_, TryCatch>> for HandleScope<'l>
+{
+  fn new(parent: &'a mut Scope<Handles_, Escape_, TryCatch>) -> Self::ScopeRef {
+    let mgr = parent.mgr.clone();
+    let cookie = mgr.shadow(parent.cookie);
+    mgr.get(cookie).borrow_mut().push::<HandleScopeData>(());
+    let self_ = Scope {
+      cookie,
+      mgr,
+      frames: 1,
+      _phantom: PhantomData,
+    };
+    ScopeRef::new(self_)
+  }
+}
+
+type EscapableHandleScope<'l, 'e> = Scope<For<'l>, For<'e>, Never>;
+
+impl<'a, 'l: 'e, 'e, Escape_, TryCatch_>
+  NewScope<'a, Scope<For<'e>, Escape_, TryCatch_>>
+  for EscapableHandleScope<'l, 'e>
+{
+  fn new(parent: &'a mut Scope<For<'e>, Escape_, TryCatch_>) -> Self::ScopeRef {
+    let mgr = parent.mgr.clone();
+    let cookie = mgr.shadow(parent.cookie);
+    mgr.get(cookie).borrow_mut().push::<EscapeSlotData>(());
+    mgr.get(cookie).borrow_mut().push::<HandleScopeData>(());
+    let self_ = Scope {
+      cookie,
+      mgr,
+      frames: 2,
+      _phantom: PhantomData,
+    };
+    ScopeRef::new(self_)
+  }
+}
+
+type TryCatch<'t, 'l, 'e, Handles, Escape> = Scope<Handles, Escape, For<'t>>;
+
+impl<'a, 't, 'l, 'e, Handles, Escape, TryCatch_>
+  NewScope<'a, Scope<Handles, Escape, TryCatch_>>
+  for TryCatch<'t, 'l, 'e, Handles, Escape>
+{
+  fn new(parent: &'a mut Scope<Handles, Escape, TryCatch_>) -> Self::ScopeRef {
     let mgr = parent.mgr.clone();
     let cookie = mgr.shadow(parent.cookie);
     mgr.get(cookie).borrow_mut().push::<TryCatchData>(());
@@ -423,15 +529,20 @@ fn use_local<T>(_: &T) {}
 
 struct Stuff<'a>(&'a Value, &'a Value, &'a Value);
 
-fn call_with_try_catch(tc: &mut TryCatch<Never>) {}
+fn call_with_try_catch(_tc: &mut TryCatch<impl Any, impl Any>) {}
+
+fn create_local_in_handle_scope<'a>(
+  scope: &mut HandleScope<'a>,
+) -> Local<'a, Value> {
+  Local::<Value>::new(scope)
+}
 
 #[allow(unused_variables)]
 pub fn testing() {
   let mgr = ScopeManager::new();
   let root = &mut Scope::root(&mgr);
   let hs = &mut Scope::with_handles(root);
-  let esc = &mut Scope::with_escape(hs);
-  //let esc = hs;
+  let esc = &mut EscapableHandleScope::new(hs);
   let ehs = &mut Scope::with_handles(esc);
   let l1 = ehs.make_local::<Value>();
   let e1 = ehs.escape(l1);
@@ -440,6 +551,7 @@ pub fn testing() {
   let tcl1 = Local::<Value>::new(tc);
   let e1 = tc.escape(l1);
   let e1 = tc.escape(l1);
+  let hs = &mut HandleScope::new(tc);
 }
 
 fn main() {
@@ -482,6 +594,8 @@ fn main() {
         {
           let w1 = &mut Scope::with_handles(w0);
           let _wl1 = Local::<Value>::new(w1);
+          let tc = &mut TryCatch::new(w1);
+          let _tcl1 = create_local_in_handle_scope(tc);
         }
         let w2 = &mut Scope::with_handles(w0);
         //let wl0x = Local::<Value>::new(w0);
@@ -493,7 +607,7 @@ fn main() {
         wl0
       };
       use_it(&z1);
-      let ref mut y2 = Scope::with_handles(&mut y);
+      let ref mut y2 = HandleScope::new(&mut y);
       //u = y2;
       //r
       //use_it(&z1);
