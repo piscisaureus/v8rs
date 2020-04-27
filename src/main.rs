@@ -105,12 +105,12 @@ impl ScopeStore {
   }
 
   #[inline(always)]
-  fn init_scope_with<S: ScopeTrait>(
+  fn init_scope_with<Scope: ScopeTrait>(
     &self,
-    scope: &mut S,
+    scope: &mut Scope,
     f: impl Fn(&mut ScopeStoreInner) -> (),
   ) {
-    //println!("New scope: {}", std::any::type_name::<S>());
+    //println!("New scope: {}", std::any::type_name::<Scope>());
     let scope = scope.as_mut_scope();
 
     let next_cookie = ScopeCookie::next(&self.cookie);
@@ -121,28 +121,28 @@ impl ScopeStore {
   }
 
   #[inline(always)]
-  fn new_scope_with<'a, S: ScopeTrait>(
+  fn new_scope_with<'a, Scope: ScopeTrait>(
     self: &Rc<Self>,
     f: impl Fn(&mut ScopeStoreInner),
-  ) -> ScopeRef<'a, S> {
-    let mut scope = S::with_store(self.clone());
+  ) -> Ref<'a, Scope> {
+    let mut scope = Scope::with_store(self.clone());
     self.init_scope_with(&mut scope, f);
-    ScopeRef::<'a, S>::new(scope)
+    Ref::<'a, Scope>::new(scope)
   }
 
   #[inline(always)]
-  fn new_inner_scope_with<'a, S: ScopeTrait>(
+  fn new_inner_scope_with<'a, Scope: ScopeTrait>(
     parent: &mut impl ScopeTrait,
     f: impl Fn(&mut ScopeStoreInner),
-  ) -> ScopeRef<'a, S> {
+  ) -> Ref<'a, Scope> {
     let parent = parent.as_mut_scope();
     assert_eq!(parent.cookie, parent.store.cookie.get());
     parent.store.new_scope_with(f)
   }
 
   #[inline(always)]
-  fn drop_scope<S: ScopeTrait>(scope: &mut S) {
-    //println!("Drop scope: {}", std::any::type_name::<S>());
+  fn drop_scope<Scope: ScopeTrait>(scope: &mut Scope) {
+    //println!("Drop scope: {}", std::any::type_name::<Scope>());
     let scope = scope.as_mut_scope();
 
     Self::with_mut(scope, |inner| {
@@ -406,55 +406,55 @@ impl ScopeCookie {
   }
 }
 
-pub struct For<'t>(PhantomData<&'t ()>);
-pub struct Never;
+pub struct Yes<'t>(PhantomData<&'t ()>);
+pub struct No;
 
-pub struct Scope<Handles = Never, Escape = Never, TryCatch = Never> {
+pub struct Scope<Handles = No, Escape = No, TryCatch = No> {
   store: Rc<ScopeStore>,
   cookie: ScopeCookie,
   frame_count: u32,
   _phantom: PhantomData<(Handles, Escape, TryCatch)>,
 }
 
-impl<'t, Handles, Escape> Deref for Scope<Handles, Escape, For<'t>> {
-  type Target = Scope<Handles, Escape, Never>;
+impl<'t, Handles, Escape> Deref for Scope<Handles, Escape, Yes<'t>> {
+  type Target = Scope<Handles, Escape, No>;
   #[inline(always)]
   fn deref(&self) -> &Self::Target {
     unsafe { Self::Target::cast(self) }
   }
 }
 
-impl<'t, Handles, Escape> DerefMut for Scope<Handles, Escape, For<'t>> {
+impl<'t, Handles, Escape> DerefMut for Scope<Handles, Escape, Yes<'t>> {
   #[inline(always)]
   fn deref_mut(&mut self) -> &mut Self::Target {
     unsafe { Self::Target::cast_mut(self) }
   }
 }
 
-impl<'h, 'e> Deref for Scope<For<'h>, For<'e>, Never> {
-  type Target = Scope<For<'h>, Never, Never>;
+impl<'h, 'e> Deref for Scope<Yes<'h>, Yes<'e>, No> {
+  type Target = Scope<Yes<'h>, No, No>;
   #[inline(always)]
   fn deref(&self) -> &Self::Target {
     unsafe { Self::Target::cast(self) }
   }
 }
 
-impl<'h, 'e> DerefMut for Scope<For<'h>, For<'e>, Never> {
+impl<'h, 'e> DerefMut for Scope<Yes<'h>, Yes<'e>, No> {
   #[inline(always)]
   fn deref_mut(&mut self) -> &mut Self::Target {
     unsafe { Self::Target::cast_mut(self) }
   }
 }
 
-impl<'h> Deref for Scope<For<'h>, Never, Never> {
-  type Target = Scope<Never, Never, Never>;
+impl<'h> Deref for Scope<Yes<'h>, No, No> {
+  type Target = Scope<No, No, No>;
   #[inline(always)]
   fn deref(&self) -> &Self::Target {
     unsafe { Self::Target::cast(self) }
   }
 }
 
-impl<'h> DerefMut for Scope<For<'h>, Never, Never> {
+impl<'h> DerefMut for Scope<Yes<'h>, No, No> {
   #[inline(always)]
   fn deref_mut(&mut self) -> &mut Self::Target {
     unsafe { Self::Target::cast_mut(self) }
@@ -477,16 +477,16 @@ impl<Handles, Escape, TryCatch> Scope<Handles, Escape, TryCatch> {
   }
 }
 
-impl Scope<Never, Never, Never> {
-  fn root<'a>(store: &'_ Rc<ScopeStore>) -> ScopeRef<'a, Self> {
+impl Scope<No, No, No> {
+  fn root<'a>(store: &'_ Rc<ScopeStore>) -> Ref<'a, Self> {
     store.new_scope_with(|_| ())
   }
 }
 
-impl<'h, Escape, TryCatch> Scope<For<'h>, Escape, TryCatch> {
+impl<'h, Escape, TryCatch> Scope<Yes<'h>, Escape, TryCatch> {
   pub fn handle_scope<'a, Handles_>(
     parent: &'a mut Scope<Handles_, Escape, TryCatch>,
-  ) -> ScopeRef<'a, Self> {
+  ) -> Ref<'a, Self> {
     ScopeStore::new_inner_scope_with(parent, |s| {
       s.push::<HandleScopeData>(());
     })
@@ -499,10 +499,10 @@ impl<'h, Escape, TryCatch> Scope<For<'h>, Escape, TryCatch> {
   }
 }
 
-impl<'h, 'e: 'h, TryCatch> Scope<For<'h>, For<'e>, TryCatch> {
+impl<'h, 'e: 'h, TryCatch> Scope<Yes<'h>, Yes<'e>, TryCatch> {
   pub fn escapable_handle_scope<'a, Escape_>(
-    parent: &'a mut Scope<For<'e>, Escape_, TryCatch>,
-  ) -> ScopeRef<'a, Self> {
+    parent: &'a mut Scope<Yes<'e>, Escape_, TryCatch>,
+  ) -> Ref<'a, Self> {
     ScopeStore::new_inner_scope_with(parent, |s| {
       s.push::<EscapeSlotData>(());
       s.push::<HandleScopeData>(());
@@ -519,57 +519,57 @@ impl<'h, 'e: 'h, TryCatch> Scope<For<'h>, For<'e>, TryCatch> {
   }
 }
 
-impl<'t, Handles, Escape> Scope<Handles, Escape, For<'t>> {
+impl<'t, Handles, Escape> Scope<Handles, Escape, Yes<'t>> {
   pub fn try_catch<'a, TryCatch_>(
     parent: &'a mut Scope<Handles, Escape, TryCatch_>,
-  ) -> ScopeRef<'a, Self> {
+  ) -> Ref<'a, Self> {
     ScopeStore::new_inner_scope_with(parent, |s| {
       s.push::<TryCatchData>(());
     })
   }
 }
 
-pub type HandleScope<'h> = Scope<For<'h>, Never, Never>;
+pub type HandleScope<'h> = Scope<Yes<'h>, No, No>;
 
 impl<'h> HandleScope<'h> {
   #[allow(clippy::new_ret_no_self)]
   pub fn new<'a, Handles_, Escape, TryCatch>(
     parent: &'a mut Scope<Handles_, Escape, TryCatch>,
-  ) -> ScopeRef<'a, Scope<For<'h>, Escape, TryCatch>> {
+  ) -> Ref<'a, Scope<Yes<'h>, Escape, TryCatch>> {
     Scope::handle_scope(parent)
   }
 }
 
-pub type EscapableHandleScope<'h, 'e> = Scope<For<'h>, For<'e>, Never>;
+pub type EscapableHandleScope<'h, 'e> = Scope<Yes<'h>, Yes<'e>, No>;
 
 impl<'h, 'e: 'h> EscapableHandleScope<'h, 'e> {
   #[allow(clippy::new_ret_no_self)]
   pub fn new<'a, Escape_, TryCatch>(
-    parent: &'a mut Scope<For<'e>, Escape_, TryCatch>,
-  ) -> ScopeRef<'a, Scope<For<'h>, For<'e>, TryCatch>> {
+    parent: &'a mut Scope<Yes<'e>, Escape_, TryCatch>,
+  ) -> Ref<'a, Scope<Yes<'h>, Yes<'e>, TryCatch>> {
     Scope::escapable_handle_scope(parent)
   }
 }
 
-pub type TryCatch<'t> = Scope<Never, Never, For<'t>>;
+pub type TryCatch<'t> = Scope<No, No, Yes<'t>>;
 
 impl<'t> TryCatch<'t> {
   #[allow(clippy::new_ret_no_self)]
   pub fn new<'a, Handles, Escape, TryCatch_>(
     parent: &'a mut Scope<Handles, Escape, TryCatch_>,
-  ) -> ScopeRef<'a, Scope<Handles, Escape, For<'t>>> {
+  ) -> Ref<'a, Scope<Handles, Escape, Yes<'t>>> {
     Scope::try_catch(parent)
   }
 }
 
-pub struct ScopeRef<'a, S: ScopeTrait> {
-  scope: S,
+pub struct Ref<'a, Scope: ScopeTrait> {
+  scope: Scope,
   _lifetime: PhantomData<&'a mut ()>,
 }
 
-impl<'a, S: ScopeTrait> ScopeRef<'a, S> {
+impl<'a, Scope: ScopeTrait> Ref<'a, Scope> {
   #[inline(always)]
-  fn new(scope: S) -> Self {
+  fn new(scope: Scope) -> Self {
     Self {
       scope,
       _lifetime: PhantomData,
@@ -577,22 +577,22 @@ impl<'a, S: ScopeTrait> ScopeRef<'a, S> {
   }
 }
 
-impl<'a, S: ScopeTrait> Drop for ScopeRef<'a, S> {
+impl<'a, Scope: ScopeTrait> Drop for Ref<'a, Scope> {
   #[inline(always)]
   fn drop(&mut self) {
     ScopeStore::drop_scope(&mut self.scope)
   }
 }
 
-impl<'a, S: ScopeTrait> Deref for ScopeRef<'a, S> {
-  type Target = S;
+impl<'a, Scope: ScopeTrait> Deref for Ref<'a, Scope> {
+  type Target = Scope;
   #[inline(always)]
   fn deref(&self) -> &Self::Target {
     &self.scope
   }
 }
 
-impl<'a, S: ScopeTrait> DerefMut for ScopeRef<'a, S> {
+impl<'a, Scope: ScopeTrait> DerefMut for Ref<'a, Scope> {
   #[inline(always)]
   fn deref_mut(&mut self) -> &mut Self::Target {
     &mut self.scope
@@ -643,7 +643,7 @@ impl<T> Deref for Global<T> {
 
 impl<'h, T> Local<'h, T> {
   fn new<'a, Escape, TryCatch>(
-    scope: &'a mut Scope<For<'h>, Escape, TryCatch>,
+    scope: &'a mut Scope<Yes<'h>, Escape, TryCatch>,
   ) -> Self
   where
     'h: 'a,
@@ -660,7 +660,7 @@ impl<'a, T> Deref for Local<'a, T> {
 }
 
 fn indirect_make_local<'h, T, Escape, TryCatch>(
-  scope: &'_ mut Scope<For<'h>, Escape, TryCatch>,
+  scope: &'_ mut Scope<Yes<'h>, Escape, TryCatch>,
 ) -> Local<'h, T> {
   Local::new(scope)
 }
@@ -722,7 +722,7 @@ fn main() {
       let r3 = Local::<Value>::new(&mut y);
       {
         let sc = &mut Scope::root(&store1);
-        let sc = &mut Scope::handle_scope(sc);
+        let sc: &mut Ref<_> = &mut Scope::handle_scope(sc);
         //let _panic = Local::<Value>::new(&mut y);
         let _scl = Local::<Value>::new(sc);
       }
@@ -745,7 +745,7 @@ fn main() {
           let tc = &mut Scope::try_catch(w1);
           let _tcl1 = create_local_in_handle_scope(tc);
         }
-        let w2 = &mut Scope::handle_scope(w0);
+        let w2 = &mut HandleScope::new(w0);
         //let wl0x = Local::<Value>::new(w0);
         let _wl2 = Local::<Value>::new(w2);
         use_it(&r1);
@@ -793,7 +793,7 @@ fn main() {
 
 pub fn godbolt() {
   let store = ScopeStore::new();
-  let root = &mut Scope::root(&store);
+  let ref mut root = Scope::root(&store);
   {
     let s1 = &mut HandleScope::new(root);
     let mut l1a = Local::<Value>::new(s1);
