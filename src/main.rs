@@ -1,4 +1,3 @@
-use derive_deref::*;
 use std::cell::Cell;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
@@ -285,7 +284,7 @@ mod data {
     }
   }
 
-  #[derive(Clone, Copy, Default, Deref, DerefMut)]
+  #[derive(Clone, Copy, Default)]
   pub(super) struct EscapeSlot(Option<NonNull<*const super::Value>>);
   impl ScopeData for EscapeSlot {
     type Args = ();
@@ -306,6 +305,19 @@ mod data {
     #[inline(always)]
     fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
       &mut active_scope_data_ptrs.escape_slot
+    }
+  }
+
+  impl Deref for EscapeSlot {
+    type Target = Option<NonNull<*const super::Value>>;
+    fn deref(&self) -> &Self::Target {
+      &self.0
+    }
+  }
+
+  impl DerefMut for EscapeSlot {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.0
     }
   }
 
