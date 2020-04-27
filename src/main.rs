@@ -249,14 +249,69 @@ mod params {
 mod data {
   use super::*;
 
+  #[derive(Clone, Copy)]
   pub(super) enum Context {
-    None,
-    UseCurrent,
-    Handle(NonNull<super::Context>),
+    Unknown,
+    Cached(Option<NonNull<super::Context>>),
+    Entered(NonNull<super::Context>),
+  }
+
+  impl Default for Context {
+    fn default() -> Self {
+      Self::Unknown
+    }
+  }
+
+  impl ScopeData for Context {
+    type Args = Option<NonNull<super::Context>>;
+    type Raw = ();
+
+    #[inline(always)]
+    fn activate(
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _raw: *mut Self::Raw,
+      args: &mut Self::Args,
+    ) -> Self {
+      let active = match args.take() {
+        None => Self::Unknown,
+        Some(handle) => Self::Entered(handle),
+      };
+      replace(&mut active_scope_data_ptrs.context, active)
+      // TODO: enter if entered.
+    }
+
+    #[inline(always)]
+    fn deactivate(
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _raw: *mut Self::Raw,
+      previous: Self,
+    ) {
+      // TODO: exit if entered.
+      replace(&mut active_scope_data_ptrs.context, previous);
+    }
+
+    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs)
+
+    #[inline(always)]
+    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
+      if let Self::Unknown = active_scope_data_ptrs.context {
+        let isolate = active_scope_data_ptrs.isolate;
+        let current_context = unsafe { (*isolate).get_current_context() }
+          .map(|local| -> *const super::Context { &*local })
+          .map(|ptr| ptr as *mut _)
+          .and_then(NonNull::new);
+        replace(
+          &mut active_scope_data_ptrs.context,
+          Self::Cached(current_context),
+        );
+      }
+      &mut active_scope_data_ptrs.context
+    }
   }
 
   #[derive(Clone, Copy, Default)]
   pub(super) struct HandleScope(Option<NonNull<<Self as ScopeData>::Raw>>);
+
   impl ScopeData for HandleScope {
     type Args = ();
     type Raw = [usize; 3];
@@ -286,6 +341,7 @@ mod data {
 
   #[derive(Clone, Copy, Default)]
   pub(super) struct EscapeSlot(Option<NonNull<*const super::Value>>);
+
   impl ScopeData for EscapeSlot {
     type Args = ();
     type Raw = ();
@@ -310,19 +366,22 @@ mod data {
 
   impl Deref for EscapeSlot {
     type Target = Option<NonNull<*const super::Value>>;
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
       &self.0
     }
   }
 
   impl DerefMut for EscapeSlot {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
       &mut self.0
     }
   }
 
-  #[derive(Clone, Copy, Default, Deref)]
+  #[derive(Clone, Copy, Default)]
   pub(super) struct TryCatch(Option<NonNull<<Self as ScopeData>::Raw>>);
+
   impl ScopeData for TryCatch {
     type Args = ();
     type Raw = [usize; 5];
@@ -347,6 +406,21 @@ mod data {
     #[inline(always)]
     fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
       &mut active_scope_data_ptrs.try_catch
+    }
+  }
+
+  impl Deref for TryCatch {
+    type Target = Option<NonNull<<Self as ScopeData>::Raw>>;
+    #[inline(always)]
+    fn deref(&self) -> &Self::Target {
+      &self.0
+    }
+  }
+
+  impl DerefMut for TryCatch {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.0
     }
   }
 }
@@ -657,6 +731,8 @@ mod internal {
 
   #[derive(Default)]
   pub(super) struct ActiveScopeDataPtrs {
+    pub isolate: *mut super::Isolate,
+    pub context: data::Context,
     pub handle_scope: data::HandleScope,
     pub escape_slot: data::EscapeSlot,
     pub try_catch: data::TryCatch,
@@ -717,6 +793,15 @@ struct Value(*mut ());
 
 #[derive(Copy, Clone)]
 struct Context(*mut ());
+
+#[derive(Copy, Clone)]
+struct Isolate(*mut ());
+
+impl Isolate {
+  fn get_current_context(&self) -> Option<Local<Context>> {
+    unimplemented!()
+  }
+}
 
 #[derive(Copy, Clone)]
 pub struct Local<'a, T> {
