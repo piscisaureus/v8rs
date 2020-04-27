@@ -290,13 +290,12 @@ mod data {
       replace(&mut active_scope_data_ptrs.context, previous);
     }
 
-    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs)
-
     #[inline(always)]
     fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
       if let Self::Unknown = active_scope_data_ptrs.context {
         let isolate = active_scope_data_ptrs.isolate;
-        let current_context = unsafe { (*isolate).get_current_context() }
+        let current_context = isolate
+          .get_current_context()
           .map(|local| -> *const super::Context { &*local })
           .map(|ptr| ptr as *mut _)
           .and_then(NonNull::new);
@@ -731,7 +730,7 @@ mod internal {
 
   #[derive(Default)]
   pub(super) struct ActiveScopeDataPtrs {
-    pub isolate: *mut super::Isolate,
+    pub isolate: super::Isolate,
     pub context: data::Context,
     pub handle_scope: data::HandleScope,
     pub escape_slot: data::EscapeSlot,
@@ -796,6 +795,12 @@ struct Context(*mut ());
 
 #[derive(Copy, Clone)]
 struct Isolate(*mut ());
+
+impl Default for Isolate {
+  fn default() -> Self {
+    Self(null_mut())
+  }
+}
 
 impl Isolate {
   fn get_current_context(&self) -> Option<Local<Context>> {
