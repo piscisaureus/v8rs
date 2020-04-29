@@ -268,9 +268,10 @@ mod data {
 
     #[inline(always)]
     fn activate(
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
       _raw: *mut Self::Raw,
       args: &mut Self::Args,
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) -> Self {
       let active = match args.take() {
         None => Self::Unknown,
@@ -282,16 +283,20 @@ mod data {
 
     #[inline(always)]
     fn deactivate(
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
       _raw: *mut Self::Raw,
       previous: Self,
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) {
       // TODO: exit if entered.
       replace(&mut active_scope_data_ptrs.context, previous);
     }
 
     #[inline(always)]
-    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
+    fn get_mut(
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+    ) -> &mut Self {
       if let Self::Unknown = active_scope_data_ptrs.context {
         let isolate = active_scope_data_ptrs.isolate;
         let current_context = isolate
@@ -316,15 +321,20 @@ mod data {
     type Raw = [usize; 3];
 
     #[inline(always)]
-    fn construct(buf: *mut Self::Raw, _args: &mut Self::Args) {
+    fn construct(
+      buf: *mut Self::Raw,
+      _args: &mut Self::Args,
+      _isolate: *mut Isolate,
+    ) {
       unsafe { ptr::write(buf, Default::default()) }
     }
 
     #[inline(always)]
     fn activate(
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
       raw: *mut Self::Raw,
       _args: &mut Self::Args,
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) -> Self {
       replace(
         &mut active_scope_data_ptrs.handle_scope,
@@ -333,7 +343,10 @@ mod data {
     }
 
     #[inline(always)]
-    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
+    fn get_mut(
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+    ) -> &mut Self {
       &mut active_scope_data_ptrs.handle_scope
     }
   }
@@ -347,9 +360,10 @@ mod data {
 
     #[inline(always)]
     fn activate(
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
       _raw: *mut Self::Raw,
       _args: &mut Self::Args,
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) -> Self {
       static mut SLOT: *const Value = null();
       let slot_ref = unsafe { &mut SLOT };
@@ -358,7 +372,10 @@ mod data {
     }
 
     #[inline(always)]
-    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
+    fn get_mut(
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+    ) -> &mut Self {
       &mut active_scope_data_ptrs.escape_slot
     }
   }
@@ -386,15 +403,20 @@ mod data {
     type Raw = [usize; 5];
 
     #[inline(always)]
-    fn construct(buf: *mut Self::Raw, _args: &mut Self::Args) {
+    fn construct(
+      buf: *mut Self::Raw,
+      _args: &mut Self::Args,
+      _isolate: *mut Isolate,
+    ) {
       unsafe { ptr::write(buf, Default::default()) }
     }
 
     #[inline(always)]
     fn activate(
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
       raw: *mut Self::Raw,
       _args: &mut Self::Args,
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) -> Self {
       replace(
         &mut active_scope_data_ptrs.try_catch,
@@ -403,7 +425,10 @@ mod data {
     }
 
     #[inline(always)]
-    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self {
+    fn get_mut(
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+    ) -> &mut Self {
       &mut active_scope_data_ptrs.try_catch
     }
   }
@@ -465,6 +490,9 @@ mod internal {
       {
         let inner = unsafe { &mut *self_.inner.get() };
         debug_assert_eq!(inner.top_scope_frame_count, 0);
+        // TODO: because `top_scope_frame_count` sits in an UnsafeCell, it's
+        // load/store doesn't get optimized away very well. Find a different
+        // solution.
         inner.top_scope_frame_count = scope.frame_count;
         let result = f(inner);
         scope.frame_count = take(&mut inner.top_scope_frame_count);
@@ -545,6 +573,7 @@ mod internal {
   }
 
   pub(super) struct ScopeStoreInner {
+    isolate: *mut Isolate,
     active_scope_data_ptrs: ActiveScopeDataPtrs,
     frame_stack: Vec<u8>,
     top_scope_frame_count: u32,
@@ -553,6 +582,7 @@ mod internal {
   impl Default for ScopeStoreInner {
     fn default() -> Self {
       Self {
+        isolate: null_mut(),
         active_scope_data_ptrs: Default::default(),
         frame_stack: Vec::with_capacity(Self::FRAME_STACK_SIZE),
         top_scope_frame_count: 0,
@@ -573,16 +603,17 @@ mod internal {
 
     #[inline(always)]
     pub fn get_mut<D: ScopeData>(&mut self) -> &mut D {
-      D::get_mut(&mut self.active_scope_data_ptrs)
+      D::get_mut(self.isolate, &mut self.active_scope_data_ptrs)
     }
 
     #[inline(always)]
     pub fn push<D: ScopeData>(&mut self, mut args: D::Args) {
       let Self {
-        active_scope_data_ptrs,
-        frame_stack,
-        top_scope_frame_count,
-      } = self;
+        isolate,
+        ref mut active_scope_data_ptrs,
+        ref mut frame_stack,
+        ref mut top_scope_frame_count,
+      } = *self;
 
       *top_scope_frame_count += 1;
 
@@ -602,11 +633,11 @@ mod internal {
 
         // Intialize the raw data part of the new stack frame.
         let raw_ptr: *mut D::Raw = &mut (*frame_ptr).raw;
-        D::construct(raw_ptr, &mut args);
+        D::construct(raw_ptr, &mut args, isolate);
 
         // Update the reference in the ActiveScopeDataPtrs structure.
         let previous_active =
-          D::activate(active_scope_data_ptrs, raw_ptr, &mut args);
+          D::activate(raw_ptr, &mut args, isolate, active_scope_data_ptrs);
         let previous_active_ptr: *mut D = &mut (*frame_ptr).previous_active;
         ptr::write(previous_active_ptr, previous_active);
 
@@ -624,10 +655,11 @@ mod internal {
     #[inline(always)]
     pub fn pop(&mut self) {
       let Self {
-        active_scope_data_ptrs,
-        frame_stack,
-        top_scope_frame_count,
-      } = self;
+        isolate,
+        ref mut active_scope_data_ptrs,
+        ref mut frame_stack,
+        ref mut top_scope_frame_count,
+      } = *self;
 
       debug_assert!(*top_scope_frame_count > 0);
       *top_scope_frame_count -= 1;
@@ -643,7 +675,7 @@ mod internal {
       // Call the frame's cleanup handler.
       let cleanup_fn = metadata.cleanup_fn;
       let frame_byte_length =
-        unsafe { cleanup_fn(metadata_ptr, active_scope_data_ptrs) };
+        unsafe { cleanup_fn(metadata_ptr, isolate, active_scope_data_ptrs) };
       let frame_byte_offset = frame_stack.len() - frame_byte_length;
 
       // Decrease the stack limit.
@@ -652,6 +684,7 @@ mod internal {
 
     unsafe fn cleanup_frame<D: ScopeData>(
       metadata_ptr: *mut ScopeStackFrameMetadata,
+      isolate: *mut Isolate,
       active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) -> usize {
       // From the stack frame metadata pointer, determine the start address of
@@ -669,7 +702,7 @@ mod internal {
 
       // Restore the relevant ActiveScopeDataPtrs slot to its previous value.
       let previous_active = ptr::read(previous_active_ptr);
-      D::deactivate(active_scope_data_ptrs, raw_ptr, previous_active);
+      D::deactivate(raw_ptr, previous_active, isolate, active_scope_data_ptrs);
 
       // Call the destructor for the raw data part of the frame.
       D::destruct(raw_ptr);
@@ -699,7 +732,11 @@ mod internal {
     type Raw: Sized;
 
     #[inline(always)]
-    fn construct(_buf: *mut Self::Raw, _args: &mut Self::Args) {
+    fn construct(
+      _buf: *mut Self::Raw,
+      _args: &mut Self::Args,
+      _isolate: *mut Isolate,
+    ) {
       assert_eq!(size_of::<Self::Raw>(), 0);
     }
 
@@ -711,21 +748,26 @@ mod internal {
     }
 
     fn activate(
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
       raw: *mut Self::Raw,
       args: &mut Self::Args,
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) -> Self;
 
     #[inline(always)]
     fn deactivate(
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
       _raw: *mut Self::Raw,
       previous: Self,
+      isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
     ) {
-      replace(Self::get_mut(active_scope_data_ptrs), previous);
+      replace(Self::get_mut(isolate, active_scope_data_ptrs), previous);
     }
 
-    fn get_mut(active_scope_data_ptrs: &mut ActiveScopeDataPtrs) -> &mut Self;
+    fn get_mut(
+      _isolate: *mut Isolate,
+      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+    ) -> &mut Self;
   }
 
   #[derive(Default)]
@@ -744,7 +786,8 @@ mod internal {
   }
 
   struct ScopeStackFrameMetadata {
-    cleanup_fn: unsafe fn(*mut Self, &mut ActiveScopeDataPtrs) -> usize,
+    cleanup_fn:
+      unsafe fn(*mut Self, *mut Isolate, &mut ActiveScopeDataPtrs) -> usize,
   }
 
   #[repr(transparent)]
@@ -980,6 +1023,8 @@ fn main() {
     let mut _q = HandleScope::new(x);
     use_it(&yyv);
     //use_it(u);
+
+    erasure();
   }
 
   //let mut xb: Scope = Scope::new(&mut x);
@@ -1011,4 +1056,22 @@ pub fn godbolt() {
       use_it(&l1a);
     }
   }
+}
+
+pub fn erasure() {
+  let store = ScopeStore::new();
+  let ref mut root = Scope::root(&store);
+  let s1 = &mut HandleScope::new(root);
+  let l1a = Local::<Value>::new(s1);
+  let _l1b = l1a;
+
+  let mut s2 = EscapableHandleScope::new(s1);
+  let _s2: &mut Scope = &mut **s2;
+  //let l2a = Local::<Value>::new(s2);
+  //let _l2b = Local::<Value>::new(s2);
+
+  // let mut l1c = Local::<Value>::new(s1);
+
+  //l1a = s2.escape(l2a);
+  //l1a = s1.escape(l1c);
 }
