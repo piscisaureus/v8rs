@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::mem::align_of;
 use std::mem::needs_drop;
@@ -18,7 +17,7 @@ use std::rc::Rc;
 
 pub(crate) use internal::ScopeStore;
 
-use internal::ActiveScopeDataPtrs;
+use internal::ActiveScopeData;
 use internal::ScopeCookie;
 use internal::ScopeData;
 use params::ScopeParams;
@@ -130,8 +129,38 @@ impl<Handles, Escape, TryCatch> Scope<Handles, Escape, TryCatch> {
 }
 
 impl Scope<No, No, No> {
-  fn root<'a>(store: &'_ Rc<ScopeStore>) -> Ref<'a, Self> {
-    store.new_scope_with(|_| ())
+  pub fn from_isolate<'a>(isolate: &'_ Isolate) -> Ref<'a, Self> {
+    let scope_store = isolate.get_scopes();
+    ScopeStore::new_scope_with(scope_store, |s| {
+      s.assert_same_isolate(isolate);
+      s.push::<data::Context>(None);
+    })
+  }
+
+  pub fn from_context<'a>(
+    context: impl Deref<Target = Context>,
+  ) -> Ref<'a, Self> {
+    let context_ptr: *const Context = &*context;
+    let context_ptr = NonNull::new(context_ptr as *mut _).unwrap();
+    let isolate = context.get_isolate();
+    let scope_store = isolate.get_scopes();
+    ScopeStore::new_scope_with(scope_store, |s| {
+      s.assert_same_isolate(isolate);
+      s.push::<data::Context>(Some(context_ptr));
+    })
+  }
+}
+
+impl<Handles, Escape, TryCatch> Scope<Handles, Escape, TryCatch> {
+  pub fn context_scope<'a>(
+    parent: &'a mut Scope<Handles, Escape, TryCatch>,
+    context: impl Deref<Target = Context>,
+  ) -> Ref<'a, Self> {
+    let context_ptr: *const Context = &*context;
+    let context_ptr = NonNull::new(context_ptr as *mut _).unwrap();
+    ScopeStore::new_inner_scope_with(parent, |s| {
+      s.push::<data::Context>(Some(context_ptr));
+    })
   }
 }
 
@@ -144,10 +173,11 @@ impl<'h, Escape, TryCatch> Scope<Yes<'h>, Escape, TryCatch> {
     })
   }
 
-  pub fn make_local<T>(&'_ mut self) -> Local<'h, T> {
+  #[inline(always)]
+  pub fn to_local<T>(&'_ mut self, ptr: *const T) -> Local<'h, T> {
     // Do not remove. This access verifies that `self` is the topmost scope.
     let _: data::HandleScope = ScopeStore::get(self);
-    Default::default()
+    Local::from_raw(ptr)
   }
 }
 
@@ -251,14 +281,14 @@ mod data {
 
   #[derive(Clone, Copy)]
   pub(super) enum Context {
-    Unknown,
-    Cached(Option<NonNull<super::Context>>),
+    Current,
+    CurrentCached(Option<NonNull<super::Context>>),
     Entered(NonNull<super::Context>),
   }
 
   impl Default for Context {
     fn default() -> Self {
-      Self::Unknown
+      Self::Current
     }
   }
 
@@ -270,14 +300,14 @@ mod data {
     fn activate(
       _raw: *mut Self::Raw,
       args: &mut Self::Args,
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) -> Self {
       let active = match args.take() {
-        None => Self::Unknown,
+        None => Self::default(),
         Some(handle) => Self::Entered(handle),
       };
-      replace(&mut active_scope_data_ptrs.context, active)
+      replace(&mut active_scope_data.context, active)
       // TODO: enter if entered.
     }
 
@@ -285,31 +315,30 @@ mod data {
     fn deactivate(
       _raw: *mut Self::Raw,
       previous: Self,
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) {
       // TODO: exit if entered.
-      replace(&mut active_scope_data_ptrs.context, previous);
+      replace(&mut active_scope_data.context, previous);
     }
 
     #[inline(always)]
-    fn get_mut(
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
-    ) -> &mut Self {
-      if let Self::Unknown = active_scope_data_ptrs.context {
-        let isolate = active_scope_data_ptrs.isolate;
+    fn get_mut<'a>(
+      isolate: &'a mut Isolate,
+      active_scope_data: &'a mut ActiveScopeData,
+    ) -> &'a mut Self {
+      if let Self::Current = active_scope_data.context {
         let current_context = isolate
           .get_current_context()
           .map(|local| -> *const super::Context { &*local })
           .map(|ptr| ptr as *mut _)
           .and_then(NonNull::new);
         replace(
-          &mut active_scope_data_ptrs.context,
-          Self::Cached(current_context),
+          &mut active_scope_data.context,
+          Self::CurrentCached(current_context),
         );
       }
-      &mut active_scope_data_ptrs.context
+      &mut active_scope_data.context
     }
   }
 
@@ -324,7 +353,7 @@ mod data {
     fn construct(
       buf: *mut Self::Raw,
       _args: &mut Self::Args,
-      _isolate: *mut Isolate,
+      _isolate: &mut Isolate,
     ) {
       unsafe { ptr::write(buf, Default::default()) }
     }
@@ -333,21 +362,18 @@ mod data {
     fn activate(
       raw: *mut Self::Raw,
       _args: &mut Self::Args,
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) -> Self {
-      replace(
-        &mut active_scope_data_ptrs.handle_scope,
-        Self(NonNull::new(raw)),
-      )
+      replace(&mut active_scope_data.handle_scope, Self(NonNull::new(raw)))
     }
 
     #[inline(always)]
-    fn get_mut(
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
-    ) -> &mut Self {
-      &mut active_scope_data_ptrs.handle_scope
+    fn get_mut<'a>(
+      _isolate: &'a mut Isolate,
+      active_scope_data: &'a mut ActiveScopeData,
+    ) -> &'a mut Self {
+      &mut active_scope_data.handle_scope
     }
   }
 
@@ -362,21 +388,21 @@ mod data {
     fn activate(
       _raw: *mut Self::Raw,
       _args: &mut Self::Args,
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) -> Self {
       static mut SLOT: *const Value = null();
       let slot_ref = unsafe { &mut SLOT };
       let slot = Self(NonNull::new(slot_ref));
-      replace(&mut active_scope_data_ptrs.escape_slot, slot)
+      replace(&mut active_scope_data.escape_slot, slot)
     }
 
     #[inline(always)]
-    fn get_mut(
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
-    ) -> &mut Self {
-      &mut active_scope_data_ptrs.escape_slot
+    fn get_mut<'a>(
+      _isolate: &'a mut Isolate,
+      active_scope_data: &'a mut ActiveScopeData,
+    ) -> &'a mut Self {
+      &mut active_scope_data.escape_slot
     }
   }
 
@@ -406,7 +432,7 @@ mod data {
     fn construct(
       buf: *mut Self::Raw,
       _args: &mut Self::Args,
-      _isolate: *mut Isolate,
+      _isolate: &mut Isolate,
     ) {
       unsafe { ptr::write(buf, Default::default()) }
     }
@@ -415,21 +441,18 @@ mod data {
     fn activate(
       raw: *mut Self::Raw,
       _args: &mut Self::Args,
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) -> Self {
-      replace(
-        &mut active_scope_data_ptrs.try_catch,
-        Self(NonNull::new(raw)),
-      )
+      replace(&mut active_scope_data.try_catch, Self(NonNull::new(raw)))
     }
 
     #[inline(always)]
-    fn get_mut(
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
-    ) -> &mut Self {
-      &mut active_scope_data_ptrs.try_catch
+    fn get_mut<'a>(
+      _isolate: &'a mut Isolate,
+      active_scope_data: &'a mut ActiveScopeData,
+    ) -> &'a mut Self {
+      &mut active_scope_data.try_catch
     }
   }
 
@@ -461,22 +484,25 @@ mod internal {
     fn with_store(store: Rc<ScopeStore>) -> Self {
       Self {
         store,
-        cookie: ScopeCookie::INVALID,
+        cookie: ScopeCookie::NONE,
         frame_count: 0,
         _phantom: PhantomData,
       }
     }
   }
 
-  #[derive(Default)]
   pub(crate) struct ScopeStore {
-    inner: UnsafeCell<ScopeStoreInner>,
     top_scope_cookie: Cell<ScopeCookie>,
+    inner: ScopeStoreInner,
   }
 
   impl ScopeStore {
-    pub fn new() -> Rc<Self> {
-      Rc::new(Default::default())
+    pub fn new(isolate: &mut Isolate) -> Rc<Self> {
+      let self_ = Self {
+        top_scope_cookie: Default::default(),
+        inner: ScopeStoreInner::new(isolate),
+      };
+      Rc::new(self_)
     }
 
     #[inline(always)]
@@ -486,18 +512,31 @@ mod internal {
     ) -> R {
       let scope = scope.as_scope_mut();
       let self_: &Self = &scope.store;
-      assert_eq!(scope.cookie, self_.top_scope_cookie.get());
-      {
-        let inner = unsafe { &mut *self_.inner.get() };
+      scope.cookie.borrow(self_.top_scope_cookie.get());
+      let result = {
+        // This is safe because we can only reach this point when `scope.cookie`
+        // matches `top_scope_cookie`. There is only one scope at any time with
+        // a matching cookie, and it can only enter here once as its cookie
+        // temporarily changes to `ScopeCookie::BORROWED` when it does.
+        #[allow(clippy::cast_ref_to_mut)]
+        let inner =
+          unsafe { &mut *(&self_.inner as *const _ as *mut ScopeStoreInner) };
+        // TODO: assigning `scope.frame_count` to `inner.top_scope_frame_count`
+        // and back does not seem to get optimized out, even if it should be
+        // clear that there is no aliasing taking place. E.g. `to_local()`
+        // produces this assembly code:
+        //  mov ecx, dword ptr [rdi + 12]  # top_scope_frame_count = frame_count
+        //  mov dword ptr [rax + 88], 0
+        //  mov dword ptr [rdi + 12], ecx  # frame_count = top_scope_frame_count
+        // It should be possible to avoid this.
         debug_assert_eq!(inner.top_scope_frame_count, 0);
-        // TODO: because `top_scope_frame_count` sits in an UnsafeCell, it's
-        // load/store doesn't get optimized away very well. Find a different
-        // solution.
         inner.top_scope_frame_count = scope.frame_count;
         let result = f(inner);
         scope.frame_count = take(&mut inner.top_scope_frame_count);
         result
-      }
+      };
+      scope.cookie.unborrow(self_.top_scope_cookie.get());
+      result
     }
 
     #[inline(always)]
@@ -574,16 +613,16 @@ mod internal {
 
   pub(super) struct ScopeStoreInner {
     isolate: *mut Isolate,
-    active_scope_data_ptrs: ActiveScopeDataPtrs,
+    active_scope_data: ActiveScopeData,
     frame_stack: Vec<u8>,
     top_scope_frame_count: u32,
   }
 
-  impl Default for ScopeStoreInner {
-    fn default() -> Self {
+  impl ScopeStoreInner {
+    fn new(isolate: &mut Isolate) -> Self {
       Self {
-        isolate: null_mut(),
-        active_scope_data_ptrs: Default::default(),
+        isolate,
+        active_scope_data: Default::default(),
         frame_stack: Vec::with_capacity(Self::FRAME_STACK_SIZE),
         top_scope_frame_count: 0,
       }
@@ -602,18 +641,26 @@ mod internal {
     const FRAME_STACK_SIZE: usize = 4096 - size_of::<usize>();
 
     #[inline(always)]
+    pub fn assert_same_isolate(&mut self, isolate: &Isolate) {
+      let isolate = isolate as *const _ as *mut Isolate;
+      assert_eq!(isolate, self.isolate);
+    }
+
+    #[inline(always)]
     pub fn get_mut<D: ScopeData>(&mut self) -> &mut D {
-      D::get_mut(self.isolate, &mut self.active_scope_data_ptrs)
+      let isolate = unsafe { &mut *self.isolate };
+      D::get_mut(isolate, &mut self.active_scope_data)
     }
 
     #[inline(always)]
     pub fn push<D: ScopeData>(&mut self, mut args: D::Args) {
       let Self {
         isolate,
-        ref mut active_scope_data_ptrs,
-        ref mut frame_stack,
-        ref mut top_scope_frame_count,
-      } = *self;
+        active_scope_data,
+        frame_stack,
+        top_scope_frame_count,
+      } = self;
+      let isolate = unsafe { &mut **isolate };
 
       *top_scope_frame_count += 1;
 
@@ -635,14 +682,14 @@ mod internal {
         let raw_ptr: *mut D::Raw = &mut (*frame_ptr).raw;
         D::construct(raw_ptr, &mut args, isolate);
 
-        // Update the reference in the ActiveScopeDataPtrs structure.
+        // Update the reference in the ActiveScopeData structure.
         let previous_active =
-          D::activate(raw_ptr, &mut args, isolate, active_scope_data_ptrs);
+          D::activate(raw_ptr, &mut args, isolate, active_scope_data);
         let previous_active_ptr: *mut D = &mut (*frame_ptr).previous_active;
         ptr::write(previous_active_ptr, previous_active);
 
         // Write the metadata part of the new stack frame. It contains the
-        // previous value of the ActiveScopeDataPtrs data pointer, plus a
+        // previous value of the ActiveScopeData data pointer, plus a
         // pointer to a cleanup function specific to this type of frame.
         let metadata = ScopeStackFrameMetadata {
           cleanup_fn: Self::cleanup_frame::<D>,
@@ -656,10 +703,11 @@ mod internal {
     pub fn pop(&mut self) {
       let Self {
         isolate,
-        ref mut active_scope_data_ptrs,
-        ref mut frame_stack,
-        ref mut top_scope_frame_count,
-      } = *self;
+        active_scope_data,
+        frame_stack,
+        top_scope_frame_count,
+      } = self;
+      let isolate = unsafe { &mut **isolate };
 
       debug_assert!(*top_scope_frame_count > 0);
       *top_scope_frame_count -= 1;
@@ -675,7 +723,7 @@ mod internal {
       // Call the frame's cleanup handler.
       let cleanup_fn = metadata.cleanup_fn;
       let frame_byte_length =
-        unsafe { cleanup_fn(metadata_ptr, isolate, active_scope_data_ptrs) };
+        unsafe { cleanup_fn(metadata_ptr, isolate, active_scope_data) };
       let frame_byte_offset = frame_stack.len() - frame_byte_length;
 
       // Decrease the stack limit.
@@ -684,8 +732,8 @@ mod internal {
 
     unsafe fn cleanup_frame<D: ScopeData>(
       metadata_ptr: *mut ScopeStackFrameMetadata,
-      isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) -> usize {
       // From the stack frame metadata pointer, determine the start address of
       // the whole stack frame.
@@ -700,9 +748,9 @@ mod internal {
       let raw_ptr: *mut D::Raw = &mut (*frame_ptr).raw;
       let previous_active_ptr: *mut D = &mut (*frame_ptr).previous_active;
 
-      // Restore the relevant ActiveScopeDataPtrs slot to its previous value.
+      // Restore the relevant ActiveScopeData slot to its previous value.
       let previous_active = ptr::read(previous_active_ptr);
-      D::deactivate(raw_ptr, previous_active, isolate, active_scope_data_ptrs);
+      D::deactivate(raw_ptr, previous_active, isolate, active_scope_data);
 
       // Call the destructor for the raw data part of the frame.
       D::destruct(raw_ptr);
@@ -735,7 +783,7 @@ mod internal {
     fn construct(
       _buf: *mut Self::Raw,
       _args: &mut Self::Args,
-      _isolate: *mut Isolate,
+      _isolate: &mut Isolate,
     ) {
       assert_eq!(size_of::<Self::Raw>(), 0);
     }
@@ -750,29 +798,28 @@ mod internal {
     fn activate(
       raw: *mut Self::Raw,
       args: &mut Self::Args,
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      _isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) -> Self;
 
     #[inline(always)]
     fn deactivate(
       _raw: *mut Self::Raw,
       previous: Self,
-      isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
+      isolate: &mut Isolate,
+      active_scope_data: &mut ActiveScopeData,
     ) {
-      replace(Self::get_mut(isolate, active_scope_data_ptrs), previous);
+      replace(Self::get_mut(isolate, active_scope_data), previous);
     }
 
-    fn get_mut(
-      _isolate: *mut Isolate,
-      active_scope_data_ptrs: &mut ActiveScopeDataPtrs,
-    ) -> &mut Self;
+    fn get_mut<'a>(
+      _isolate: &'a mut Isolate,
+      active_scope_data: &'a mut ActiveScopeData,
+    ) -> &'a mut Self;
   }
 
   #[derive(Default)]
-  pub(super) struct ActiveScopeDataPtrs {
-    pub isolate: super::Isolate,
+  pub(super) struct ActiveScopeData {
     pub context: data::Context,
     pub handle_scope: data::HandleScope,
     pub escape_slot: data::EscapeSlot,
@@ -787,20 +834,20 @@ mod internal {
 
   struct ScopeStackFrameMetadata {
     cleanup_fn:
-      unsafe fn(*mut Self, *mut Isolate, &mut ActiveScopeDataPtrs) -> usize,
+      unsafe fn(*mut Self, &mut Isolate, &mut ActiveScopeData) -> usize,
   }
 
   #[repr(transparent)]
-  #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+  #[derive(Copy, Clone, Debug, Eq, PartialEq)]
   pub(super) struct ScopeCookie(u32);
 
   impl ScopeCookie {
-    const INVALID: Self = Self(!0);
+    pub const NONE: Self = Self(0);
+    pub const BORROWED: Self = Self(!0);
 
     #[inline(always)]
     fn next(cell: &Cell<Self>) -> Self {
       let cur_cookie = cell.get();
-      assert_ne!(cur_cookie, Self::INVALID);
       let next_cookie = Self(cur_cookie.0 + 1);
       cell.set(next_cookie);
       next_cookie
@@ -809,7 +856,6 @@ mod internal {
     #[inline(always)]
     fn revert(cell: &Cell<Self>) -> Self {
       let cur_cookie = cell.get();
-      assert_ne!(cur_cookie, Self::INVALID);
       assert_ne!(cur_cookie, Self::default());
       let old_cookie = Self(cur_cookie.0 - 1);
       cell.set(old_cookie);
@@ -819,14 +865,32 @@ mod internal {
     #[inline(always)]
     fn set(&mut self, value: Self) {
       let invalid = replace(self, value);
-      assert_eq!(invalid, Self::INVALID)
+      assert_eq!(invalid, Self::NONE)
     }
 
     #[inline(always)]
-    fn reset(&mut self, value: Self) {
-      let cookie = replace(self, Self::INVALID);
-      assert_eq!(cookie, value);
+    fn reset(&mut self, expected_value: Self) {
+      let cookie = replace(self, Self::NONE);
+      assert_eq!(cookie, expected_value);
     }
+
+    #[inline(always)]
+    fn borrow(&mut self, expected_value: Self) {
+      let cookie = replace(self, Self::BORROWED);
+      assert_eq!(cookie, expected_value);
+    }
+
+    #[inline(always)]
+    fn unborrow(&mut self, value: Self) {
+      let cookie = replace(self, value);
+      assert_eq!(cookie, Self::BORROWED);
+    }
+  }
+}
+
+impl Default for ScopeCookie {
+  fn default() -> Self {
+    Self::NONE
   }
 }
 
@@ -834,15 +898,37 @@ mod internal {
 struct Value(*mut ());
 
 #[derive(Copy, Clone)]
-struct Context(*mut ());
+pub struct Context(*mut ());
 
-#[derive(Copy, Clone)]
-struct Isolate(*mut ());
-
-impl Default for Isolate {
-  fn default() -> Self {
-    Self(null_mut())
+impl Context {
+  pub fn get_isolate(&self) -> &Isolate {
+    unimplemented!()
   }
+}
+
+#[derive(Clone)]
+pub struct Isolate {
+  scopes: Rc<ScopeStore>,
+}
+
+impl Isolate {
+  pub fn new() -> Box<Self> {
+    new_box_with(|isolate| {
+      let scopes = ScopeStore::new(unsafe { &mut *isolate });
+      Self { scopes }
+    })
+  }
+
+  fn get_scopes(&self) -> &Rc<ScopeStore> {
+    &self.scopes
+  }
+}
+
+fn new_box_with<T>(new_fn: impl FnOnce(*mut T) -> T) -> Box<T> {
+  let b = Box::new(std::mem::MaybeUninit::<T>::uninit());
+  let p = Box::into_raw(b) as *mut T;
+  unsafe { ptr::write(p, new_fn(p)) };
+  unsafe { Box::from_raw(p) }
 }
 
 impl Isolate {
@@ -853,15 +939,24 @@ impl Isolate {
 
 #[derive(Copy, Clone)]
 pub struct Local<'a, T> {
+  ptr: *const T,
   _phantom: PhantomData<&'a T>,
-  _ptr: *mut T,
+}
+
+impl<'a, T> Local<'a, T> {
+  fn from_raw(ptr: *const T) -> Self {
+    Self {
+      ptr,
+      _phantom: PhantomData,
+    }
+  }
 }
 
 impl<'a, T> Default for Local<'a, T> {
   fn default() -> Self {
     Local {
       _phantom: PhantomData,
-      _ptr: null_mut(),
+      ptr: null(),
     }
   }
 }
@@ -894,14 +989,15 @@ impl<'h, T> Local<'h, T> {
   where
     'h: 'a,
   {
-    scope.make_local::<T>()
+    let addr = 42usize * size_of::<T>();
+    scope.to_local::<T>(addr as *const _)
   }
 }
 
 impl<'a, T> Deref for Local<'a, T> {
   type Target = T;
   fn deref(&self) -> &Self::Target {
-    unsafe { &*self._ptr }
+    unsafe { &*self.ptr }
   }
 }
 
@@ -932,13 +1028,13 @@ fn create_local_in_escapable_handle_scope<'h, 'e>(
 
 #[allow(unused_variables)]
 fn testing() {
-  let store = ScopeStore::new();
-  let root = &mut Scope::root(&store);
+  let isolate = Isolate::new();
+  let root = &mut Scope::from_isolate(&isolate);
   let hs = &mut Scope::handle_scope(root);
   let esc1 = &mut Scope::escapable_handle_scope(hs);
   let esc2 = &mut EscapableHandleScope::new(esc1);
   let ehs = &mut Scope::handle_scope(esc2);
-  let l1 = ehs.make_local::<Value>();
+  let l1 = Local::<Value>::new(ehs);
   let e1 = ehs.escape(l1);
   let tc = &mut TryCatch::new(ehs);
   create_local_in_escapable_handle_scope(tc);
@@ -953,23 +1049,23 @@ fn testing() {
 fn main() {
   testing();
 
-  let store1 = ScopeStore::new();
-  let root1 = &mut Scope::root(&store1);
-  let store2 = ScopeStore::new();
-  let root2 = &mut Scope::root(&store2);
+  let isolate1 = Isolate::new();
+  let root1 = &mut Scope::from_isolate(&isolate1);
+  let isolate2 = Isolate::new();
+  let root2 = &mut Scope::from_isolate(&isolate2);
   {
     let x = &mut Scope::handle_scope(root1);
-    let _xxv = x.make_local::<Value>();
+    let _xxv = Local::<Value>::new(x);
     let yyv = {
       let mut y = HandleScope::new(x);
       //std::mem::swap(&mut x, &mut y);
       //let r1 = Local::<Value>::new(x);
       //let r2 = (y.get_make_local())();
-      let r1 = y.make_local::<Value>();
-      let r2 = y.make_local::<Value>();
+      let r1 = Local::<Value>::new(&mut y);
+      let r2 = Local::<Value>::new(&mut y);
       let r3 = Local::<Value>::new(&mut y);
       {
-        let sc = &mut Scope::root(&store1);
+        let sc = &mut Scope::from_isolate(&isolate1);
         let sc: &mut Ref<_> = &mut Scope::handle_scope(sc);
         //let _panic = Local::<Value>::new(&mut y);
         let _scl = Local::<Value>::new(sc);
@@ -1023,8 +1119,6 @@ fn main() {
     let mut _q = HandleScope::new(x);
     use_it(&yyv);
     //use_it(u);
-
-    erasure();
   }
 
   //let mut xb: Scope = Scope::new(&mut x);
@@ -1042,8 +1136,8 @@ fn main() {
 }
 
 pub fn godbolt() {
-  let store = ScopeStore::new();
-  let ref mut root = Scope::root(&store);
+  let isolate = Isolate::new();
+  let root = &mut Scope::from_isolate(&isolate);
   {
     let s1 = &mut HandleScope::new(root);
     let mut l1a = Local::<Value>::new(s1);
@@ -1056,22 +1150,4 @@ pub fn godbolt() {
       use_it(&l1a);
     }
   }
-}
-
-pub fn erasure() {
-  let store = ScopeStore::new();
-  let ref mut root = Scope::root(&store);
-  let s1 = &mut HandleScope::new(root);
-  let l1a = Local::<Value>::new(s1);
-  let _l1b = l1a;
-
-  let mut s2 = EscapableHandleScope::new(s1);
-  let _s2: &mut Scope = &mut **s2;
-  //let l2a = Local::<Value>::new(s2);
-  //let _l2b = Local::<Value>::new(s2);
-
-  // let mut l1c = Local::<Value>::new(s1);
-
-  //l1a = s2.escape(l2a);
-  //l1a = s1.escape(l1c);
 }
