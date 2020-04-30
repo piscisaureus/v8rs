@@ -689,7 +689,6 @@ mod internal {
         ptr::write(previous_active_ptr, previous_active);
 
         // Write the metadata part of the new stack frame. It contains the
-        // previous value of the ActiveScopeData data pointer, plus a
         // pointer to a cleanup function specific to this type of frame.
         let metadata = ScopeStackFrameMetadata {
           cleanup_fn: Self::cleanup_frame::<D>,
