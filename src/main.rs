@@ -476,12 +476,12 @@ mod internal {
   use super::*;
 
   pub(super) trait ScopeInit: ScopeParams {
-    fn with_store(store: Rc<ScopeStore>) -> Self;
+    fn new_with_store(store: Rc<ScopeStore>) -> Self;
   }
 
   impl<Handles, Escape, TryCatch> ScopeInit for Scope<Handles, Escape, TryCatch> {
     #[inline(always)]
-    fn with_store(store: Rc<ScopeStore>) -> Self {
+    fn new_with_store(store: Rc<ScopeStore>) -> Self {
       Self {
         store,
         cookie: ScopeCookie::NONE,
@@ -572,7 +572,7 @@ mod internal {
       self: &Rc<Self>,
       f: impl Fn(&mut ScopeStoreInner),
     ) -> Ref<'a, Scope> {
-      let mut scope = Scope::with_store(self.clone());
+      let mut scope = Scope::new_with_store(self.clone());
       self.init_scope_with(&mut scope, f);
       Ref::<'a, Scope>::new(scope)
     }
