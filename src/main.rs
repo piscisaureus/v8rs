@@ -174,10 +174,23 @@ impl<'h, Escape, TryCatch> Scope<Yes<'h>, Escape, TryCatch> {
   }
 
   #[inline(always)]
-  pub fn to_local<T>(&'_ mut self, ptr: *const T) -> Local<'h, T> {
+  pub fn to_local<T>(&'_ mut self, ptr: *const T) -> Option<Local<'h, T>> {
     // Do not remove. This access verifies that `self` is the topmost scope.
     let _: data::HandleScope = ScopeStore::get(self);
     Local::from_raw(ptr)
+  }
+
+  #[inline(always)]
+  pub fn context(&'_ mut self) -> Local<'h, Context> {
+    let context_data: data::Context = ScopeStore::get(self);
+    let context_ptr = match context_data {
+      data::Context::CurrentCached(p) => {
+        p.expect("no context has been entered")
+      }
+      data::Context::Entered(p) => p,
+      _ => unreachable!(),
+    };
+    Local::from_raw_non_null(context_ptr)
   }
 }
 
@@ -285,6 +298,8 @@ mod data {
     CurrentCached(Option<NonNull<super::Context>>),
     Entered(NonNull<super::Context>),
   }
+
+  impl Context {}
 
   impl Default for Context {
     fn default() -> Self {
@@ -506,7 +521,7 @@ mod internal {
     }
 
     #[inline(always)]
-    fn with_mut<R>(
+    pub fn with_mut<R>(
       scope: &mut impl ScopeParams,
       f: impl Fn(&mut ScopeStoreInner) -> R,
     ) -> R {
@@ -644,6 +659,11 @@ mod internal {
     pub fn assert_same_isolate(&mut self, isolate: &Isolate) {
       let isolate = isolate as *const _ as *mut Isolate;
       assert_eq!(isolate, self.isolate);
+    }
+
+    #[inline(always)]
+    pub fn get_isolate_ptr(&mut self) -> *mut Isolate {
+      self.isolate
     }
 
     #[inline(always)]
@@ -938,24 +958,19 @@ impl Isolate {
 
 #[derive(Copy, Clone)]
 pub struct Local<'a, T> {
-  ptr: *const T,
+  ptr: NonNull<T>,
   _phantom: PhantomData<&'a T>,
 }
 
 impl<'a, T> Local<'a, T> {
-  fn from_raw(ptr: *const T) -> Self {
+  fn from_raw(ptr: *const T) -> Option<Self> {
+    NonNull::new(ptr as *mut _).map(Self::from_raw_non_null)
+  }
+
+  fn from_raw_non_null(ptr: NonNull<T>) -> Self {
     Self {
       ptr,
       _phantom: PhantomData,
-    }
-  }
-}
-
-impl<'a, T> Default for Local<'a, T> {
-  fn default() -> Self {
-    Local {
-      _phantom: PhantomData,
-      ptr: null(),
     }
   }
 }
@@ -989,14 +1004,14 @@ impl<'h, T> Local<'h, T> {
     'h: 'a,
   {
     let addr = 42usize * size_of::<T>();
-    scope.to_local::<T>(addr as *const _)
+    scope.to_local::<T>(addr as *const _).unwrap()
   }
 }
 
 impl<'a, T> Deref for Local<'a, T> {
   type Target = T;
   fn deref(&self) -> &Self::Target {
-    unsafe { &*self.ptr }
+    unsafe { self.ptr.as_ref() }
   }
 }
 
