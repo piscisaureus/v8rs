@@ -129,7 +129,7 @@ impl<Handles, Escape, TryCatch> Scope<Handles, Escape, TryCatch> {
 }
 
 impl Scope<No, No, No> {
-  pub fn from_isolate<'a>(isolate: &'_ Isolate) -> Ref<'a, Self> {
+  pub fn enter_isolate<'a>(isolate: &'_ Isolate) -> Ref<'a, Self> {
     let scope_store = isolate.get_scopes();
     ScopeStore::new_scope_with(scope_store, |s| {
       s.assert_same_isolate(isolate);
@@ -137,7 +137,7 @@ impl Scope<No, No, No> {
     })
   }
 
-  pub fn from_context<'a>(
+  pub fn enter_context<'a>(
     context: impl Deref<Target = Context>,
   ) -> Ref<'a, Self> {
     let context_ptr: *const Context = &*context;
@@ -661,6 +661,7 @@ mod internal {
       assert_eq!(isolate, self.isolate);
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn get_isolate_ptr(&mut self) -> *mut Isolate {
       self.isolate
@@ -1043,7 +1044,7 @@ fn create_local_in_escapable_handle_scope<'h, 'e>(
 #[allow(unused_variables)]
 fn testing() {
   let isolate = Isolate::new();
-  let root = &mut Scope::from_isolate(&isolate);
+  let root = &mut Scope::enter_isolate(&isolate);
   let hs = &mut Scope::handle_scope(root);
   let esc1 = &mut Scope::escapable_handle_scope(hs);
   let esc2 = &mut EscapableHandleScope::new(esc1);
@@ -1064,9 +1065,9 @@ fn main() {
   testing();
 
   let isolate1 = Isolate::new();
-  let root1 = &mut Scope::from_isolate(&isolate1);
+  let root1 = &mut Scope::enter_isolate(&isolate1);
   let isolate2 = Isolate::new();
-  let root2 = &mut Scope::from_isolate(&isolate2);
+  let root2 = &mut Scope::enter_isolate(&isolate2);
   {
     let x = &mut Scope::handle_scope(root1);
     let _xxv = Local::<Value>::new(x);
@@ -1079,7 +1080,7 @@ fn main() {
       let r2 = Local::<Value>::new(&mut y);
       let r3 = Local::<Value>::new(&mut y);
       {
-        let sc = &mut Scope::from_isolate(&isolate1);
+        let sc = &mut Scope::enter_isolate(&isolate1);
         let sc: &mut Ref<_> = &mut Scope::handle_scope(sc);
         //let _panic = Local::<Value>::new(&mut y);
         let _scl = Local::<Value>::new(sc);
@@ -1151,7 +1152,7 @@ fn main() {
 
 pub fn godbolt() {
   let isolate = Isolate::new();
-  let root = &mut Scope::from_isolate(&isolate);
+  let root = &mut Scope::enter_isolate(&isolate);
   {
     let s1 = &mut HandleScope::new(root);
     let mut l1a = Local::<Value>::new(s1);
