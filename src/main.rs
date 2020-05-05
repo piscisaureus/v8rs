@@ -60,16 +60,20 @@ impl<'a, 'p: 'a, __, Escape: 'a, TryCatch: 'a> Push<'p, HandleScope<'a>>
     type New = Scope<'a, Nw, Escape, TryCatch>;
 }
 
-impl<'a, 'e: 'a, 'p: 'a, Escape: 'a, TryCatch: 'a> Push<'p, EscapableHandleScope<'a, 'e>>
+impl<'a, 'p: 'a, Escape: 'a, TryCatch: 'a> Push<'p, EscapableHandleScope<'a, 'p>>
     for Scope<'p, In, Escape, TryCatch>
 {
-    type New = Scope<'a, Nw, NwEsc<'e>, TryCatch>;
+    type New = Scope<'a, Nw, NwEsc<'p>, TryCatch>;
 }
 
-impl<'a, 'p: 'a, Locals: Stable + 'a, Escape: Stable + 'a, __>
-    Push<'p, TryCatch<'a, Locals, Escape>> for Scope<'p, Locals, Escape, __>
+impl<'a, 'p: 'a, __> Push<'p, TryCatch<'a, No, No>> for Scope<'p, No, No, __> {
+    type New = Scope<'a, No, No, Nw>;
+}
+
+impl<'a, 'p: 'a, Escape: Stable + 'a, __> Push<'p, TryCatch<'a, In, Escape>>
+    for Scope<'p, In, Escape, __>
 {
-    type New = Scope<'a, Locals, Escape, Nw>;
+    type New = Scope<'a, InEsc<'p>, Escape, Nw>;
 }
 
 trait Enter {
@@ -146,6 +150,12 @@ fn main() {
     let ese = es.enter();
     let mut tc = TryCatch::new(ese);
     let _tce = tc.enter();
+
+    {
+        let mut s = Scope::root();
+        let mut tc = TryCatch::new(&mut s);
+        let _tce = tc.enter();
+    }
 
     let mut s2 = Scope::root();
     let _x = {
