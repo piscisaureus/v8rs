@@ -1,0 +1,8 @@
+[package]
+name = "test29"
+version = "0.1.0"
+authors = ["Bert Belder <bertbelder@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+derive_deref = "1.1.0"
