@@ -23,17 +23,17 @@ impl<'a, T> Local<'a, T> {
     }
 }
 
-pub trait DerivedScope<P> {
+pub trait DerivedScope<'a, P> {
     type Alloc;
 }
 
-impl<'a, 'b: 'a> DerivedScope<&'a mut HandleScope<'b, Context>> for HandleScope<'a> {
+impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b, Context>> for HandleScope<'a> {
     type Alloc = alloc::HandleScope<'a, Context>;
 }
-impl<'a> DerivedScope<Context> for HandleScope<'a> {
+impl<'a> DerivedScope<'a, Context> for HandleScope<'a> {
     type Alloc = alloc::HandleScope<'a, Context>;
 }
-impl<'a, 'b: 'a> DerivedScope<&'a mut HandleScope<'b, Context>> for TryCatch<'a> {
+impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b, Context>> for TryCatch<'a> {
     type Alloc = alloc::TryCatch<'a, HandleScope<'b, Context>>;
 }
 
@@ -127,25 +127,25 @@ pub(self) mod active {
         pub fn root() -> alloc::HandleScope<'a, ()> {
             unimplemented!()
         }
-        pub fn new<'b: 'a, P: 'b>(parent: P) -> <Self as DerivedScope<P>>::Alloc
+        pub fn new<'b: 'a, P: 'b>(parent: &'a mut P) -> <Self as DerivedScope<P>>::Alloc
         where
-            Self: DerivedScope<P>,
+            Self: DerivedScope<'a, P>,
         {
             unimplemented!()
         }
     }
     impl<'a, 'b> EscapableHandleScope<'a, 'b> {
-        pub fn new<'c: 'a, P: 'c>(parent: P) -> <Self as DerivedScope<P>>::Alloc
+        pub fn new<'c: 'a, P: 'c>(parent: &'a mut P) -> <Self as DerivedScope<P>>::Alloc
         where
-            Self: DerivedScope<P>,
+            Self: DerivedScope<'a, P>,
         {
             unimplemented!()
         }
     }
     impl<'a> TryCatch<'a> {
-        pub fn new<'b: 'a, P: 'b>(parent: P) -> <Self as DerivedScope<P>>::Alloc
+        pub fn new<'b: 'a, P: 'b>(parent: &'a mut P) -> <Self as DerivedScope<P>>::Alloc
         where
-            Self: DerivedScope<P>,
+            Self: DerivedScope<'a, P>,
         {
             unimplemented!()
         }
@@ -174,9 +174,9 @@ fn main() {
     let mut root = HandleScope::root();
     let root = root.enter();
 
-    let ctx = Context::new();
+    let mut ctx = Context::new();
 
-    let mut s1 = HandleScope::new(ctx);
+    let mut s1 = HandleScope::new(&mut ctx);
     let s1 = s1.enter();
 
     let s1l1 = Local::<i8>::new(s1);
@@ -187,6 +187,8 @@ fn main() {
 
         let s2l1 = Local::<i8>::new(s2);
         let s2l2 = Local::<i8>::new(s2);
+        //let _fail = Local::<i8>::new(s1);
         s2l1;
     };
+    let _s1l3 = Local::<i8>::new(s1);
 }
