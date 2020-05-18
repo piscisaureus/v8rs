@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::marker::PhantomData as __;
 use std::ptr::null_mut;
 
@@ -24,17 +26,17 @@ impl<'a, T> Local<'a, T> {
 }
 
 pub trait DerivedScope<'a, P> {
-    type Alloc;
+    type NewScope;
 }
 
 impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b, Context>> for HandleScope<'a> {
-    type Alloc = alloc::HandleScope<'a, Context>;
+    type NewScope = alloc::HandleScope<'a, Context>;
 }
 impl<'a> DerivedScope<'a, Context> for HandleScope<'a> {
-    type Alloc = alloc::HandleScope<'a, Context>;
+    type NewScope = alloc::HandleScope<'a, Context>;
 }
 impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b, Context>> for TryCatch<'a> {
-    type Alloc = alloc::TryCatch<'a, HandleScope<'b, Context>>;
+    type NewScope = alloc::TryCatch<'a, HandleScope<'b, Context>>;
 }
 
 pub(self) mod data {
@@ -63,7 +65,7 @@ pub mod alloc {
         Declared(&'a mut P),
         Entered(data::HandleScope),
     }
-    pub enum EscapableHandleScope<'a, 'b, P = active::HandleScope<'b>> {
+    pub enum EscapableHandleScope<'a, 'b, P = Context> {
         Declared {
             parent: &'a mut P,
             escape_sclot: active::EscapeSlot<'b>,
@@ -114,7 +116,7 @@ pub(self) mod active {
         common: Common,
         _phantom: __<&'a mut P>,
     }
-    pub struct EscapableHandleScope<'a, 'b, P = HandleScope<'b>> {
+    pub struct EscapableHandleScope<'a, 'b, P = Context> {
         common: Common,
         _phantom: __<(&'a mut P, &'b mut P)>,
     }
@@ -127,7 +129,7 @@ pub(self) mod active {
         pub fn root() -> alloc::HandleScope<'a, ()> {
             unimplemented!()
         }
-        pub fn new<'b: 'a, P: 'b>(parent: &'a mut P) -> <Self as DerivedScope<P>>::Alloc
+        pub fn new<'b: 'a, P: 'b>(_parent: &'a mut P) -> <Self as DerivedScope<P>>::NewScope
         where
             Self: DerivedScope<'a, P>,
         {
@@ -135,7 +137,7 @@ pub(self) mod active {
         }
     }
     impl<'a, 'b> EscapableHandleScope<'a, 'b> {
-        pub fn new<'c: 'a, P: 'c>(parent: &'a mut P) -> <Self as DerivedScope<P>>::Alloc
+        pub fn new<'c: 'a, P: 'c>(_parent: &'a mut P) -> <Self as DerivedScope<P>>::NewScope
         where
             Self: DerivedScope<'a, P>,
         {
@@ -143,7 +145,7 @@ pub(self) mod active {
         }
     }
     impl<'a> TryCatch<'a> {
-        pub fn new<'b: 'a, P: 'b>(parent: &'a mut P) -> <Self as DerivedScope<P>>::Alloc
+        pub fn new<'b: 'a, P: 'b>(_parent: &'a mut P) -> <Self as DerivedScope<P>>::NewScope
         where
             Self: DerivedScope<'a, P>,
         {
@@ -172,21 +174,21 @@ use active::*;
 
 fn main() {
     let mut root = HandleScope::root();
-    let root = root.enter();
+    let _root = root.enter();
 
     let mut ctx = Context::new();
 
     let mut s1 = HandleScope::new(&mut ctx);
     let s1 = s1.enter();
 
-    let s1l1 = Local::<i8>::new(s1);
-    let s1l2 = Local::<i8>::new(s1);
+    let _s1l1 = Local::<i8>::new(s1);
+    let _s1l2 = Local::<i8>::new(s1);
     let _fail = {
         let mut s2 = HandleScope::new(s1);
         let s2 = s2.enter();
 
         let s2l1 = Local::<i8>::new(s2);
-        let s2l2 = Local::<i8>::new(s2);
+        let _s2l2 = Local::<i8>::new(s2);
         //let _fail = Local::<i8>::new(s1);
         s2l1;
     };
