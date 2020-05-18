@@ -29,14 +29,81 @@ pub trait DerivedScope<'a, P> {
     type NewScope;
 }
 
-impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b, Context>> for HandleScope<'a> {
-    type NewScope = alloc::HandleScope<'a, Context>;
-}
 impl<'a> DerivedScope<'a, Context> for HandleScope<'a> {
     type NewScope = alloc::HandleScope<'a, Context>;
 }
-impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b, Context>> for TryCatch<'a> {
+
+impl<'a> DerivedScope<'a, HandleScope<'a, ()>> for Context {
+    type NewScope = alloc::HandleScope<'a>;
+}
+
+impl<'a> DerivedScope<'a, HandleScope<'a>> for Context {
+    type NewScope = alloc::HandleScope<'a>;
+}
+
+impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b>> for HandleScope<'a> {
+    type NewScope = alloc::HandleScope<'a>;
+}
+
+impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b>> for EscapableHandleScope<'a, 'b> {
+    type NewScope = alloc::EscapableHandleScope<'a, 'b>;
+}
+
+impl<'a, 'b: 'a> DerivedScope<'a, HandleScope<'b>> for TryCatch<'a> {
     type NewScope = alloc::TryCatch<'a, HandleScope<'b, Context>>;
+}
+
+impl<'a, 'b: 'a> DerivedScope<'a, EscapableHandleScope<'a, 'b>> for Context {
+    type NewScope = alloc::EscapableHandleScope<'a, 'b>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, EscapableHandleScope<'b, 'c>> for HandleScope<'a> {
+    type NewScope = alloc::EscapableHandleScope<'a, 'c>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, EscapableHandleScope<'b, 'c>>
+    for EscapableHandleScope<'a, 'b>
+{
+    type NewScope = alloc::EscapableHandleScope<'a, 'b>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, EscapableHandleScope<'b, 'c>> for TryCatch<'a> {
+    type NewScope = alloc::TryCatch<'a, EscapableHandleScope<'b, 'c, Context>>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, TryCatch<'a, EscapableHandleScope<'b, 'c, Context>>>
+    for Context
+{
+    type NewScope = alloc::TryCatch<'a, EscapableHandleScope<'b, 'c, Context>>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b, 'd: 'c>
+    DerivedScope<'a, TryCatch<'b, EscapableHandleScope<'c, 'd, Context>>> for HandleScope<'a>
+{
+    type NewScope = alloc::EscapableHandleScope<'a, 'd>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b, 'd: 'c>
+    DerivedScope<'a, TryCatch<'b, EscapableHandleScope<'c, 'd, Context>>>
+    for EscapableHandleScope<'a, 'b>
+{
+    type NewScope = alloc::EscapableHandleScope<'a, 'c>;
+}
+
+impl<'a, 'b: 'a> DerivedScope<'a, TryCatch<'a, HandleScope<'b, Context>>> for Context {
+    type NewScope = alloc::TryCatch<'a, HandleScope<'b, Context>>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, TryCatch<'b, HandleScope<'c, Context>>>
+    for HandleScope<'a>
+{
+    type NewScope = alloc::HandleScope<'a>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, TryCatch<'b, HandleScope<'c, Context>>>
+    for EscapableHandleScope<'a, 'b>
+{
+    type NewScope = alloc::EscapableHandleScope<'a, 'c>;
 }
 
 pub(self) mod data {
@@ -92,13 +159,17 @@ pub mod alloc {
             unimplemented!()
         }
     }
-    impl<'a, 'b, 'c> TryCatch<'a, EscapableHandleScope<'b, 'c, Context>> {
-        pub fn enter(&'a mut self) -> &'a mut TryCatch<'a, EscapableHandleScope<'b, 'c, Context>> {
+    impl<'a, 'b, 'c> TryCatch<'a, active::EscapableHandleScope<'b, 'c, Context>> {
+        pub fn enter(
+            &'a mut self,
+        ) -> &'a mut active::TryCatch<'a, active::EscapableHandleScope<'b, 'c, Context>> {
             unimplemented!()
         }
     }
-    impl<'a, 'b> TryCatch<'a, HandleScope<'b, Context>> {
-        pub fn enter(&'a mut self) -> &'a mut TryCatch<'a, HandleScope<'b, Context>> {
+    impl<'a, 'b> TryCatch<'a, active::HandleScope<'b, Context>> {
+        pub fn enter(
+            &'a mut self,
+        ) -> &'a mut active::TryCatch<'a, active::HandleScope<'b, Context>> {
             unimplemented!()
         }
     }
@@ -173,8 +244,8 @@ pub(self) mod active {
 use active::*;
 
 fn main() {
-    let mut root = HandleScope::root();
-    let _root = root.enter();
+    //let mut root = HandleScope::root();
+    //let _root = root.enter();
 
     let mut ctx = Context::new();
 
@@ -193,4 +264,44 @@ fn main() {
         s2l1;
     };
     let _s1l3 = Local::<i8>::new(s1);
+
+    test1();
+}
+
+fn test1() {
+    let mut ctx = Context::new();
+
+    let mut s1 = HandleScope::new(&mut ctx);
+    let s1 = s1.enter();
+
+    {
+        let mut s2 = HandleScope::new(s1);
+        let _s2 = s2.enter();
+    }
+
+    {
+        let mut s2 = EscapableHandleScope::new(s1);
+        let s2 = s2.enter();
+        {
+            let mut s3 = HandleScope::new(s2);
+            let _s3 = s3.enter();
+        }
+        {
+            let mut s3 = TryCatch::new(s2);
+            let _s3 = s3.enter();
+        }
+    }
+
+    {
+        let mut s2 = TryCatch::new(s1);
+        let s2 = s2.enter();
+        {
+            let mut s3 = HandleScope::new(s2);
+            let _s3 = s3.enter();
+        }
+        {
+            let mut s3 = EscapableHandleScope::new(s2);
+            let _s3 = s3.enter();
+        }
+    }
 }
