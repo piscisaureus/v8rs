@@ -149,20 +149,16 @@ pub mod alloc {
       unimplemented!()
     }
   }
-  impl<'a, 'b> EscapableHandleScope<'a, 'b, Context> {
-    pub fn enter(
-      &'a mut self,
-    ) -> &'a mut active::EscapableHandleScope<'a, 'b, Context> {
+  impl<'a, 'b> EscapableHandleScope<'a, 'b> {
+    pub fn enter(&'a mut self) -> &'a mut active::EscapableHandleScope<'a, 'b> {
       unimplemented!()
     }
   }
-  impl<'a, 'b, 'c> TryCatch<'a, active::EscapableHandleScope<'b, 'c, Context>> {
+  impl<'a, 'b, 'c> TryCatch<'a, active::EscapableHandleScope<'b, 'c>> {
     pub fn enter(
       &'a mut self,
-    ) -> &'a mut active::TryCatch<
-      'a,
-      active::EscapableHandleScope<'b, 'c, Context>,
-    > {
+    ) -> &'a mut active::TryCatch<'a, active::EscapableHandleScope<'b, 'c>>
+    {
       unimplemented!()
     }
   }
@@ -187,9 +183,9 @@ pub(self) mod active {
     common: Common,
     _phantom: PhantomData<&'a mut P>,
   }
-  pub struct EscapableHandleScope<'a, 'b, P = Context> {
+  pub struct EscapableHandleScope<'a, 'b> {
     common: Common,
-    _phantom: PhantomData<(&'a mut P, &'b mut P)>,
+    _phantom: PhantomData<(&'a mut (), &'b mut ())>,
   }
   pub struct TryCatch<'a, P = Context> {
     common: Common,
@@ -224,7 +220,7 @@ pub(self) mod active {
   impl<'a, P> Drop for HandleScope<'a, P> {
     fn drop(&mut self) {}
   }
-  impl<'a, 'b, P> Drop for EscapableHandleScope<'a, 'b, P> {
+  impl<'a, 'b> Drop for EscapableHandleScope<'a, 'b> {
     fn drop(&mut self) {}
   }
   impl<'a, P> Drop for TryCatch<'a, P> {
@@ -285,8 +281,8 @@ pub(self) mod active {
 
   impl<'a> HandleScope<'a, ()> {}
   impl<'a> HandleScope<'a, Context> {}
-  impl<'a, 'b> EscapableHandleScope<'a, 'b, Context> {}
-  impl<'a, 'b, 'c> TryCatch<'a, EscapableHandleScope<'b, 'c, Context>> {}
+  impl<'a, 'b> EscapableHandleScope<'a, 'b> {}
+  impl<'a, 'b, 'c> TryCatch<'a, EscapableHandleScope<'b, 'c>> {}
   impl<'a, 'b> TryCatch<'a, HandleScope<'b, Context>> {}
 }
 
