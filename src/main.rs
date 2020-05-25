@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use std::marker::PhantomData as __;
+use std::marker::PhantomData;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::ptr::null_mut;
 
 pub struct Context {
@@ -14,120 +16,87 @@ impl Context {
 
 pub struct Local<'a, T> {
   ptr: *mut (),
-  _phantom: __<&'a T>,
+  _phantom: PhantomData<&'a T>,
 }
 impl<'a, T> Local<'a, T> {
   pub fn new(_: &'_ mut HandleScope<'a>) -> Self {
     Self {
       ptr: null_mut(),
-      _phantom: __,
+      _phantom: PhantomData,
     }
   }
 }
 
-pub trait DerivedScope<'a, P> {
+pub trait AddHandleScope<'a> {
   type NewScope;
 }
-
-impl<'a> DerivedScope<'a, Context> for HandleScope<'a> {
-  type NewScope = alloc::HandleScope<'a, Context>;
+pub trait AddEscapableHandleScope<'a> {
+  type NewScope;
 }
-
-// ===== Context =====
-
-impl<'a> DerivedScope<'a, active::HandleScope<'a, ()>> for Context {
-  type NewScope = alloc::HandleScope<'a>;
-}
-
-impl<'a> DerivedScope<'a, active::HandleScope<'a>> for Context {
-  type NewScope = alloc::HandleScope<'a>;
-}
-
-impl<'a, 'b: 'a> DerivedScope<'a, active::EscapableHandleScope<'a, 'b>>
-  for Context
-{
-  type NewScope = alloc::EscapableHandleScope<'a, 'b>;
-}
-
-impl<'a, 'b: 'a, 'c: 'b>
-  DerivedScope<'a, active::TryCatch<'a, active::EscapableHandleScope<'b, 'c>>>
-  for Context
-{
-  type NewScope = alloc::TryCatch<'a, active::EscapableHandleScope<'b, 'c>>;
-}
-
-impl<'a, 'b: 'a> DerivedScope<'a, active::TryCatch<'a, active::HandleScope<'b>>>
-  for Context
-{
-  type NewScope = alloc::TryCatch<'a, active::HandleScope<'b>>;
+pub trait AddTryCatch<'a> {
+  type NewScope;
 }
 
 // ===== HandleScope<'a> =====
 
-impl<'a, 'b: 'a> DerivedScope<'a, active::HandleScope<'b>>
-  for active::HandleScope<'a>
-{
+impl<'a> AddHandleScope<'a> for Context {
   type NewScope = alloc::HandleScope<'a>;
 }
 
-impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, active::EscapableHandleScope<'b, 'c>>
-  for active::HandleScope<'a>
+impl<'a, 'b: 'a> AddHandleScope<'a> for active::HandleScope<'b> {
+  type NewScope = alloc::HandleScope<'a>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> AddHandleScope<'a>
+  for active::EscapableHandleScope<'b, 'c>
 {
   type NewScope = alloc::EscapableHandleScope<'a, 'c>;
 }
 
-impl<'a, 'b: 'a, 'c: 'b, 'd: 'c>
-  DerivedScope<'a, active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>>
-  for active::HandleScope<'a>
+impl<'a, 'b: 'a, 'c: 'b, 'd: 'c> AddHandleScope<'a>
+  for active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>
 {
   type NewScope = alloc::EscapableHandleScope<'a, 'd>;
 }
 
-impl<'a, 'b: 'a, 'c: 'b>
-  DerivedScope<'a, active::TryCatch<'b, active::HandleScope<'c>>>
-  for active::HandleScope<'a>
+impl<'a, 'b: 'a, 'c: 'b> AddHandleScope<'a>
+  for active::TryCatch<'b, active::HandleScope<'c>>
 {
   type NewScope = alloc::HandleScope<'a>;
 }
 
 // ===== EscapableHandleScope<'a, 'b> =====
 
-impl<'a, 'b: 'a> DerivedScope<'a, active::HandleScope<'b>>
-  for active::EscapableHandleScope<'a, 'b>
+impl<'a, 'b: 'a> AddEscapableHandleScope<'a> for active::HandleScope<'b> {
+  type NewScope = alloc::EscapableHandleScope<'a, 'b>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> AddEscapableHandleScope<'a>
+  for active::EscapableHandleScope<'b, 'c>
 {
   type NewScope = alloc::EscapableHandleScope<'a, 'b>;
 }
 
-impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, active::EscapableHandleScope<'b, 'c>>
-  for active::EscapableHandleScope<'a, 'b>
-{
-  type NewScope = alloc::EscapableHandleScope<'a, 'b>;
-}
-
-impl<'a, 'b: 'a, 'c: 'b, 'd: 'c>
-  DerivedScope<'a, active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>>
-  for active::EscapableHandleScope<'a, 'b>
+impl<'a, 'b: 'a, 'c: 'b, 'd: 'c> AddEscapableHandleScope<'a>
+  for active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>
 {
   type NewScope = alloc::EscapableHandleScope<'a, 'c>;
 }
 
-impl<'a, 'b: 'a, 'c: 'b>
-  DerivedScope<'a, active::TryCatch<'b, active::HandleScope<'c>>>
-  for active::EscapableHandleScope<'a, 'b>
+impl<'a, 'b: 'a, 'c: 'b> AddEscapableHandleScope<'a>
+  for active::TryCatch<'b, active::HandleScope<'c>>
 {
   type NewScope = alloc::EscapableHandleScope<'a, 'c>;
 }
 
 // ===== TryCatch<'a> =====
 
-impl<'a, 'b: 'a> DerivedScope<'a, active::HandleScope<'b>>
-  for active::TryCatch<'a>
-{
+impl<'a, 'b: 'a> AddTryCatch<'a> for active::HandleScope<'b> {
   type NewScope = alloc::TryCatch<'a, active::HandleScope<'b>>;
 }
 
-impl<'a, 'b: 'a, 'c: 'b> DerivedScope<'a, active::EscapableHandleScope<'b, 'c>>
-  for active::TryCatch<'a>
+impl<'a, 'b: 'a, 'c: 'b> AddTryCatch<'a>
+  for active::EscapableHandleScope<'b, 'c>
 {
   type NewScope = alloc::TryCatch<'a, active::EscapableHandleScope<'b, 'c>>;
 }
@@ -213,50 +182,41 @@ pub(self) mod active {
     isolate: *mut (),
   }
 
-  pub struct EscapeSlot<'a>(*const (), __<&'a mut ()>);
+  pub struct EscapeSlot<'a>(*const (), PhantomData<&'a mut ()>);
   pub struct HandleScope<'a, P = Context> {
     common: Common,
-    _phantom: __<&'a mut P>,
+    _phantom: PhantomData<&'a mut P>,
   }
   pub struct EscapableHandleScope<'a, 'b, P = Context> {
     common: Common,
-    _phantom: __<(&'a mut P, &'b mut P)>,
+    _phantom: PhantomData<(&'a mut P, &'b mut P)>,
   }
   pub struct TryCatch<'a, P = Context> {
     common: Common,
-    _phantom: __<&'a mut P>,
+    _phantom: PhantomData<&'a mut P>,
   }
 
   impl<'a> HandleScope<'a> {
     pub fn root() -> alloc::HandleScope<'a, ()> {
       unimplemented!()
     }
-    pub fn new<'b: 'a, P: 'b>(
+    pub fn new<'b: 'a, P: AddHandleScope<'a> + 'b>(
       _parent: &'a mut P,
-    ) -> <Self as DerivedScope<P>>::NewScope
-    where
-      Self: DerivedScope<'a, P>,
-    {
+    ) -> <P as AddHandleScope<'a>>::NewScope {
       unimplemented!()
     }
   }
   impl<'a, 'b> EscapableHandleScope<'a, 'b> {
-    pub fn new<'c: 'a, P: 'c>(
+    pub fn new<'c: 'a, P: AddEscapableHandleScope<'a> + 'c>(
       _parent: &'a mut P,
-    ) -> <Self as DerivedScope<P>>::NewScope
-    where
-      Self: DerivedScope<'a, P>,
-    {
+    ) -> <P as AddEscapableHandleScope<'a>>::NewScope {
       unimplemented!()
     }
   }
   impl<'a> TryCatch<'a> {
-    pub fn new<'b: 'a, P: 'b>(
+    pub fn new<'b: 'a, P: AddTryCatch<'a> + 'b>(
       _parent: &'a mut P,
-    ) -> <Self as DerivedScope<P>>::NewScope
-    where
-      Self: DerivedScope<'a, P>,
-    {
+    ) -> <P as AddTryCatch<'a>>::NewScope {
       unimplemented!()
     }
   }
@@ -269,6 +229,58 @@ pub(self) mod active {
   }
   impl<'a, P> Drop for TryCatch<'a, P> {
     fn drop(&mut self) {}
+  }
+
+  impl<'a> Deref for HandleScope<'a> {
+    type Target = HandleScope<'a, ()>;
+    fn deref(&self) -> &Self::Target {
+      unsafe { &*(self as *const _ as *const Self::Target) }
+    }
+  }
+
+  impl<'a> DerefMut for HandleScope<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      unsafe { &mut *(self as *mut _ as *mut Self::Target) }
+    }
+  }
+
+  impl<'a, 'b> Deref for EscapableHandleScope<'a, 'b> {
+    type Target = HandleScope<'a>;
+    fn deref(&self) -> &Self::Target {
+      unsafe { &*(self as *const _ as *const Self::Target) }
+    }
+  }
+
+  impl<'a, 'b> DerefMut for EscapableHandleScope<'a, 'b> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      unsafe { &mut *(self as *mut _ as *mut Self::Target) }
+    }
+  }
+
+  impl<'a, 'b, 'c> Deref for TryCatch<'a, EscapableHandleScope<'b, 'c>> {
+    type Target = EscapableHandleScope<'b, 'c>;
+    fn deref(&self) -> &Self::Target {
+      unsafe { &*(self as *const _ as *const Self::Target) }
+    }
+  }
+
+  impl<'a, 'b, 'c> DerefMut for TryCatch<'a, EscapableHandleScope<'b, 'c>> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      unsafe { &mut *(self as *mut _ as *mut Self::Target) }
+    }
+  }
+
+  impl<'a, 'b> Deref for TryCatch<'a, HandleScope<'b>> {
+    type Target = HandleScope<'b>;
+    fn deref(&self) -> &Self::Target {
+      unsafe { &*(self as *const _ as *const Self::Target) }
+    }
+  }
+
+  impl<'a, 'b> DerefMut for TryCatch<'a, HandleScope<'b>> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      unsafe { &mut *(self as *mut _ as *mut Self::Target) }
+    }
   }
 
   impl<'a> HandleScope<'a, ()> {}
@@ -310,35 +322,43 @@ fn test1() {
 
   let mut s1 = HandleScope::new(&mut ctx);
   let s1 = s1.enter();
+  let _ = Local::<i8>::new(s1);
 
   {
     let mut s2 = HandleScope::new(s1);
-    let _s2 = s2.enter();
+    let s2 = s2.enter();
+    let _ = Local::<i8>::new(s2);
   }
 
   {
     let mut s2 = EscapableHandleScope::new(s1);
     let s2 = s2.enter();
+    let _ = Local::<i8>::new(s2);
     {
       let mut s3 = HandleScope::new(s2);
-      let _s3 = s3.enter();
+      let s3 = s3.enter();
+      let _ = Local::<i8>::new(s3);
     }
     {
       let mut s3 = TryCatch::new(s2);
-      let _s3 = s3.enter();
+      let s3 = s3.enter();
+      let _ = Local::<i8>::new(s3);
     }
   }
 
   {
     let mut s2 = TryCatch::new(s1);
     let s2 = s2.enter();
+    let _ = Local::<i8>::new(s2);
     {
       let mut s3 = HandleScope::new(s2);
-      let _s3 = s3.enter();
+      let s3 = s3.enter();
+      let _ = Local::<i8>::new(s3);
     }
     {
       let mut s3 = EscapableHandleScope::new(s2);
-      let _s3 = s3.enter();
+      let s3 = s3.enter();
+      let _ = Local::<i8>::new(s3);
     }
   }
 }

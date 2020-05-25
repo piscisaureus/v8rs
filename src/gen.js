@@ -191,33 +191,53 @@ const deref_map = new Map();
 for (let c1 of chain_map.values()) {
   for (let c2; (c2 = c1.deref()) != null; c1 = c2) {
     const named_lts = name_lts(c1, c2);
-    let kv = [c1, c2].map(c => c.serialize(named_lts)).filter(Boolean);
+    let kv = [c1, c2].map(c => c.serialize(named_lts, "")).filter(Boolean);
     if (kv.length < 2) continue;
     const [k, v] = kv;
+    const l = serialize_lts(named_lts, false);
     if (deref_map.has(k)) {
-      assert(deref_map.get(k) === v);
+      assert(deref_map.get(k)[0] === v);
     } else {
-      deref_map.set(k, v);
+      deref_map.set(k, [v, l]);
     }
   }
 }
-console.log([...deref_map].map(([k, v]) => `${k} => ${v}`));
+console.log(
+  [...deref_map]
+    .map(
+      ([k, [v, l]]) => `\
+impl<${l}> Deref for ${k} {
+  type Target = ${v};
+  fn deref(&self) -> &Self::Target {
+    unsafe { &*(self as *const _ as *const Self::Target) }
+  }
+}
 
-console.log();
+impl<${l}> DerefMut for ${k} {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    unsafe { &mut *(self as *mut _ as *mut Self::Target) }
+  }
+}
+
+`
+    )
+    .join("")
+);
 
 let mappings = Object.create(null);
 for (const c1 of chain_map.values()) {
   for (let [a, c2] of [...c1.add_all()].filter(Boolean)) {
     a = a.append_default_parent();
     let sa = a.serialize();
-    const named_lts = name_lts(c1, c2, a);
+    const named_lts = name_lts(c1, c2);
     let [sc1, sc2] = [c1, c2].map(c => c.serialize(named_lts)).filter(Boolean);
     if (!(sc1 && sc2)) continue;
     let code =
       [
-        `impl<${serialize_lts(named_lts)}> DerivedScope<${named_lts.get(
-          c2.lt
-        )}, ${ns(sc1, "active::")}> for ${ns(sa, "active::")} {`,
+        `impl<${serialize_lts(named_lts)}> Add${sa.replace(
+          /\<.*/,
+          ""
+        )}<${named_lts.get(c2.lt)}> for ${ns(sc1, "active::")} {`,
         `  type NewScope = ${ns(sc2, "alloc::")};`,
         `}`
       ].join("\n") + "\n";
