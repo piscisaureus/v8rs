@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::marker::PhantomData;
+use std::mem::replace;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr::null_mut;
@@ -183,15 +184,15 @@ pub(self) mod active {
 
   pub struct EscapeSlot<'a>(*const (), PhantomData<&'a mut ()>);
   pub struct HandleScope<'a, P = Context> {
-    effective_scope: NonNull<EffectiveScope>,
+    pub(super) effective_scope: NonNull<EffectiveScope>,
     _phantom: PhantomData<&'a mut P>,
   }
   pub struct EscapableHandleScope<'a, 'b> {
-    effective_scope: EffectiveScope,
+    pub(super) effective_scope: NonNull<EffectiveScope>,
     _phantom: PhantomData<(&'a mut (), &'b mut ())>,
   }
   pub struct TryCatch<'a, P = Context> {
-    effective_scope: EffectiveScope,
+    pub(super) effective_scope: NonNull<EffectiveScope>,
     _phantom: PhantomData<&'a mut P>,
   }
 
@@ -301,11 +302,247 @@ mod data2 {
     isolate: Option<NonNull<Isolate>>,
     context: Option<NonNull<Context>>,
     escape_slot: Option<NonNull<Address>>,
-    //try_catch: Option<NonNull<TryCatch>>,
+    try_catch: Option<NonNull<TryCatch>>,
   }
 
-  trait Template {
-    type Param;
+  struct ScopeData<
+    'a,
+    P: ScopeParent<'a>,
+    C: ScopeComponent = (),
+    H: ScopeComponent = (),
+    E: ScopeComponent = (),
+    T: ScopeComponent = (),
+  > {
+    scope_prior: P::Prior,
+    effective_scope: NonNull<EffectiveScope>,
+    context_scope: C,
+    context_scope_prior: C::Prior,
+    handle_scope: H,
+    handle_scope_prior: H::Prior,
+    escape_slot: E,
+    escape_slot_prior: E::Prior,
+    try_catch: T,
+    try_catch_prior: T::Prior,
+  }
+
+  impl<
+      'a,
+      P: ScopeParent<'a>,
+      C: ScopeComponent,
+      H: ScopeComponent,
+      E: ScopeComponent,
+      T: ScopeComponent,
+    > ScopeData<'a, P, C, H, E, T>
+  {
+    fn enter(&mut self) {
+      let effective_scope = unsafe { self.effective_scope.as_mut() };
+      self
+        .context_scope
+        .enter(&mut self.context_scope_prior, effective_scope);
+      self
+        .escape_slot
+        .enter(&mut self.escape_slot_prior, effective_scope);
+      self
+        .handle_scope
+        .enter(&mut self.handle_scope_prior, effective_scope);
+      self
+        .try_catch
+        .enter(&mut self.try_catch_prior, effective_scope);
+    }
+    fn exit(&mut self) {
+      let effective_scope = unsafe { self.effective_scope.as_mut() };
+      self
+        .context_scope
+        .exit(&mut self.context_scope_prior, effective_scope);
+      self
+        .escape_slot
+        .exit(&mut self.escape_slot_prior, effective_scope);
+      self
+        .handle_scope
+        .exit(&mut self.handle_scope_prior, effective_scope);
+      self
+        .try_catch
+        .exit(&mut self.try_catch_prior, effective_scope);
+    }
+  }
+  impl<
+      'a,
+      P: ScopeParent<'a>,
+      C: ScopeComponent,
+      H: ScopeComponent,
+      E: ScopeComponent,
+      T: ScopeComponent,
+    > Drop for ScopeData<'a, P, C, H, E, T>
+  {
+    fn drop(&mut self) {}
+  }
+
+  trait ScopeParent<'a> {
+    type Prior: 'a;
+    fn prior(&'a mut self) -> Self::Prior;
+  }
+  impl<'a> ScopeParent<'a> for () {
+    type Prior = ();
+    fn prior(&'a mut self) -> Self::Prior {}
+  }
+  impl<'a, 'b: 'a> ScopeParent<'a> for &'a mut active::HandleScope<'b, ()> {
+    type Prior = &'a mut NonNull<EffectiveScope>;
+    fn prior(&'a mut self) -> Self::Prior {
+      &mut self.effective_scope
+    }
+  }
+  impl<'a, 'b: 'a> ScopeParent<'a> for &'a mut active::HandleScope<'b> {
+    type Prior = &'a mut NonNull<EffectiveScope>;
+    fn prior(&'a mut self) -> Self::Prior {
+      &mut self.effective_scope
+    }
+  }
+  impl<'a, 'b: 'a, 'c: 'b> ScopeParent<'a>
+    for &'a mut active::EscapableHandleScope<'b, 'c>
+  {
+    type Prior = &'a mut NonNull<EffectiveScope>;
+    fn prior(&'a mut self) -> Self::Prior {
+      &mut self.effective_scope
+    }
+  }
+  impl<'a, 'b: 'a, H> ScopeParent<'a> for &'a mut active::TryCatch<'b, H> {
+    type Prior = &'a mut NonNull<EffectiveScope>;
+    fn prior(&'a mut self) -> Self::Prior {
+      &mut self.effective_scope
+    }
+  }
+
+  trait ScopeComponent {
+    type Prior: Default;
+    fn enter(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+    }
+    fn exit(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+    }
+  }
+
+  impl ScopeComponent for () {
+    type Prior = ();
+    fn enter(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+    }
+    fn exit(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+    }
+  }
+
+  #[repr(C)]
+  struct ContextScope(NonNull<Context>);
+  impl ScopeComponent for ContextScope {
+    type Prior = Option<NonNull<Context>>;
+    fn enter(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      // XXX Create raw trycatch.
+      let ctx = effective_scope.context.replace(self.0);
+      let ctx = replace(prior, ctx);
+      assert!(ctx.is_none());
+    }
+    fn exit(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      let ctx = prior.take();
+      let ctx = replace(&mut effective_scope.context, ctx).unwrap();
+      assert_eq!(ctx, self.0);
+      // XXX Destroy raw trycatch.
+    }
+  }
+
+  #[repr(C)]
+  struct HandleScope([usize; 3]);
+  impl ScopeComponent for HandleScope {
+    type Prior = ();
+    fn enter(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      // Create raw handlescope.
+    }
+    fn exit(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      // Destroy raw handlescope.
+    }
+  }
+
+  #[repr(transparent)]
+  struct EscapeSlot(NonNull<Address>);
+  impl ScopeComponent for EscapeSlot {
+    type Prior = Option<NonNull<Address>>;
+    fn enter(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      // XXX Create raw slot.
+      let esc = effective_scope.escape_slot.replace(self.0);
+      let esc = replace(prior, esc);
+      assert!(esc.is_none());
+    }
+    fn exit(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      let esc = prior.take();
+      let esc = replace(&mut effective_scope.escape_slot, esc).unwrap();
+      assert_eq!(esc, self.0);
+      // XXX Destroy raw slot.
+    }
+  }
+
+  #[repr(C)]
+  struct TryCatch([usize; 6]);
+  impl ScopeComponent for TryCatch {
+    type Prior = Option<NonNull<TryCatch>>;
+    fn enter(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      // XXX Create raw trycatch.
+      let tc = effective_scope.try_catch.replace(NonNull::from(self));
+      let tc = replace(prior, tc);
+      assert!(tc.is_none());
+    }
+    fn exit(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      let tc = prior.take();
+      let tc = replace(&mut effective_scope.try_catch, tc).unwrap();
+      assert_eq!(tc, NonNull::from(self));
+      // XXX Destroy raw trycatch.
+    }
+  }
+
+  /*  type Param;
 
     fn new(param: Self::Param) -> Self;
 
@@ -356,7 +593,7 @@ mod data2 {
   struct HandleScope<'a, P = ()> {
     prior: &'a mut NonNull<EffectiveScope>,
     _phantom: PhantomData<P>,
-  }
+  }*/
 }
 
 mod raw {
