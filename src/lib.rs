@@ -67,17 +67,13 @@ impl<'a, 'b: 'a, 'c: 'b> AddContextScope<'a>
 impl<'a, 'b: 'a, 'c: 'b, 'd: 'c> AddContextScope<'a>
   for active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>
 {
-  type NewScope = alloc::ContextScope<
-    'a,
-    active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>,
-  >;
+  type NewScope = alloc::ContextScope<'a, active::EscapableHandleScope<'c, 'd>>;
 }
 
 impl<'a, 'b: 'a, 'c: 'b> AddContextScope<'a>
   for active::TryCatch<'b, active::HandleScope<'c>>
 {
-  type NewScope =
-    alloc::ContextScope<'a, active::TryCatch<'b, active::HandleScope<'c>>>;
+  type NewScope = alloc::ContextScope<'a, active::HandleScope<'c>>;
 }
 
 // ===== HandleScope<'a> =====
@@ -398,7 +394,7 @@ mod data2 {
   type Address = usize;
 
   pub struct EffectiveScope {
-    topmost_scope: Option<NonNull<NonNull<EffectiveScope>>>,
+    innermost: Option<NonNull<Innermost>>,
     isolate: Option<NonNull<Isolate>>,
     context: Option<NonNull<Context>>,
     escape_slot: Option<NonNull<Address>>,
@@ -414,7 +410,8 @@ mod data2 {
     T: ScopeComponent = (),
   > {
     scope_prior: P::Prior,
-    effective_scope: NonNull<EffectiveScope>,
+    effective: NonNull<EffectiveScope>,
+    effective_prior: Option<NonNull<EffectiveScope>>,
     context_scope: C,
     context_scope_prior: C::Prior,
     handle_scope: H,
@@ -435,7 +432,7 @@ mod data2 {
     > ScopeData<'a, P, C, H, E, T>
   {
     fn enter(&mut self) {
-      let effective_scope = unsafe { self.effective_scope.as_mut() };
+      let effective_scope = unsafe { self.effective.as_mut() };
       self
         .context_scope
         .enter(&mut self.context_scope_prior, effective_scope);
@@ -450,7 +447,7 @@ mod data2 {
         .enter(&mut self.try_catch_prior, effective_scope);
     }
     fn exit(&mut self) {
-      let effective_scope = unsafe { self.effective_scope.as_mut() };
+      let effective_scope = unsafe { self.effective.as_mut() };
       self
         .context_scope
         .exit(&mut self.context_scope_prior, effective_scope);
@@ -541,6 +538,40 @@ mod data2 {
       _prior: &mut Self::Prior,
       _effective_scope: &mut EffectiveScope,
     ) {
+    }
+  }
+  #[derive(Eq, PartialEq)]
+  struct Innermost(NonNull<EffectiveScope>);
+  impl Innermost {
+    fn has_been_entered(&self, prior: &Option<NonNull<Innermost>>) -> bool {
+      let effective_scope = unsafe { self.0.as_ref() };
+      match effective_scope.innermost {
+        Some(d) if d == NonNull::from(self) => true,
+        d if d == *prior => false,
+        _ => panic!("cannot use scope while it is shadowed"),
+      }
+    }
+  }
+  impl ScopeComponent for Innermost {
+    type Prior = Option<NonNull<Innermost>>;
+    fn enter(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      let entered = effective_scope.innermost.replace(NonNull::from(self));
+      match prior {
+        prior @ Some(_) => assert_eq!(*prior, entered),
+        prior @ None => *prior = entered,
+      }
+    }
+    fn exit(
+      &mut self,
+      prior: &mut Self::Prior,
+      effective_scope: &mut EffectiveScope,
+    ) {
+      let exited = replace(&mut effective_scope.innermost, *prior).unwrap();
+      assert_eq!(exited, NonNull::from(self));
     }
   }
 
