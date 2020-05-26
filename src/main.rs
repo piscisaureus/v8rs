@@ -1,4 +1,5 @@
 use test34::Context;
+use test34::ContextScope;
 use test34::EscapableHandleScope;
 use test34::HandleScope;
 use test34::Local;
@@ -6,11 +7,10 @@ use test34::TryCatch;
 
 fn main() {
   let mut root = HandleScope::root();
-  let _root = root.enter();
+  let root = root.enter();
 
-  let mut ctx = Context::new();
-
-  let mut s1 = HandleScope::new(&mut ctx);
+  let ctx = Context::new();
+  let mut s1 = ContextScope::new(root, &ctx);
   let s1 = s1.enter();
 
   let _s1l1 = Local::<i8>::new(s1);
@@ -30,9 +30,11 @@ fn main() {
 }
 
 fn test1() {
-  let mut ctx = Context::new();
+  let ctx = Context::new();
+  let mut s0 = ContextScope::root(&ctx);
+  let s0 = s0.enter();
 
-  let mut s1 = HandleScope::new(&mut ctx);
+  let mut s1 = HandleScope::new(s0);
   let s1 = s1.enter();
   let _ = Local::<i8>::new(s1);
 
@@ -40,6 +42,17 @@ fn test1() {
     let mut s2 = HandleScope::new(s1);
     let s2 = s2.enter();
     let _ = Local::<i8>::new(s2);
+  }
+
+  {
+    let ctx = Context::new();
+    let mut s2 = ContextScope::new(s1, &ctx);
+    let s2 = s2.enter();
+    let _ = Local::<i8>::new(s2);
+
+    let mut s3 = HandleScope::new(s2);
+    let s3 = s3.enter();
+    let _ = Local::<i8>::new(s3);
   }
 
   {

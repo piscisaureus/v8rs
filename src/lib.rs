@@ -35,6 +35,9 @@ impl<'a, T> Local<'a, T> {
   }
 }
 
+pub trait AddContextScope<'a> {
+  type NewScope;
+}
 pub trait AddHandleScope<'a> {
   type NewScope;
 }
@@ -45,10 +48,48 @@ pub trait AddTryCatch<'a> {
   type NewScope;
 }
 
+// ===== ContextScope<'a> =====
+
+impl<'a, 'b: 'a> AddContextScope<'a> for active::HandleScope<'b, ()> {
+  type NewScope = alloc::ContextScope<'a, active::HandleScope<'b>>;
+}
+
+impl<'a, 'b: 'a> AddContextScope<'a> for active::HandleScope<'b> {
+  type NewScope = alloc::ContextScope<'a, active::HandleScope<'b>>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> AddContextScope<'a>
+  for active::EscapableHandleScope<'b, 'c>
+{
+  type NewScope = alloc::ContextScope<'a, active::EscapableHandleScope<'b, 'c>>;
+}
+
+impl<'a, 'b: 'a, 'c: 'b, 'd: 'c> AddContextScope<'a>
+  for active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>
+{
+  type NewScope = alloc::ContextScope<
+    'a,
+    active::TryCatch<'b, active::EscapableHandleScope<'c, 'd>>,
+  >;
+}
+
+impl<'a, 'b: 'a, 'c: 'b> AddContextScope<'a>
+  for active::TryCatch<'b, active::HandleScope<'c>>
+{
+  type NewScope =
+    alloc::ContextScope<'a, active::TryCatch<'b, active::HandleScope<'c>>>;
+}
+
 // ===== HandleScope<'a> =====
 
-impl<'a> AddHandleScope<'a> for Context {
+impl<'a, 'b: 'a> AddHandleScope<'a> for active::ContextScope<'b> {
   type NewScope = alloc::HandleScope<'a>;
+}
+
+impl<'a, 'b: 'a, P: AddHandleScope<'a>> AddHandleScope<'a>
+  for active::ContextScope<'b, P>
+{
+  type NewScope = <P as AddHandleScope<'a>>::NewScope;
 }
 
 impl<'a, 'b: 'a> AddHandleScope<'a> for active::HandleScope<'b> {
@@ -75,6 +116,12 @@ impl<'a, 'b: 'a, 'c: 'b> AddHandleScope<'a>
 
 // ===== EscapableHandleScope<'a, 'b> =====
 
+impl<'a, 'b: 'a, P: AddEscapableHandleScope<'a>> AddEscapableHandleScope<'a>
+  for active::ContextScope<'b, P>
+{
+  type NewScope = <P as AddEscapableHandleScope<'a>>::NewScope;
+}
+
 impl<'a, 'b: 'a> AddEscapableHandleScope<'a> for active::HandleScope<'b> {
   type NewScope = alloc::EscapableHandleScope<'a, 'b>;
 }
@@ -99,6 +146,12 @@ impl<'a, 'b: 'a, 'c: 'b> AddEscapableHandleScope<'a>
 
 // ===== TryCatch<'a> =====
 
+impl<'a, 'b: 'a, P: AddTryCatch<'a>> AddTryCatch<'a>
+  for active::ContextScope<'b, P>
+{
+  type NewScope = <P as AddTryCatch<'a>>::NewScope;
+}
+
 impl<'a, 'b: 'a> AddTryCatch<'a> for active::HandleScope<'b> {
   type NewScope = alloc::TryCatch<'a, active::HandleScope<'b>>;
 }
@@ -110,6 +163,8 @@ impl<'a, 'b: 'a, 'c: 'b> AddTryCatch<'a>
 }
 
 pub(self) mod data {
+  use super::*;
+  pub struct ContextScope(NonNull<Context>);
   pub struct EscapeSlot(*const ());
   pub struct HandleScope([usize; 3]);
   pub struct EscapableHandleScope {
@@ -119,6 +174,9 @@ pub(self) mod data {
   pub(crate) struct TryCatch([usize; 7]);
 
   impl Drop for HandleScope {
+    fn drop(&mut self) {}
+  }
+  impl Drop for ContextScope {
     fn drop(&mut self) {}
   }
   impl Drop for EscapableHandleScope {
@@ -131,6 +189,13 @@ pub(self) mod data {
 
 pub mod alloc {
   use super::*;
+  pub enum ContextScope<'a, P> {
+    Declared {
+      parent: &'a mut P,
+      context: &'a Context,
+    },
+    Entered(data::ContextScope),
+  }
   pub enum HandleScope<'a, P = Context> {
     Declared(&'a mut P),
     Entered(data::HandleScope),
@@ -138,7 +203,7 @@ pub mod alloc {
   pub enum EscapableHandleScope<'a, 'b, P = Context> {
     Declared {
       parent: &'a mut P,
-      escape_slot: active::EscapeSlot<'b>,
+      escape_slot: &'b mut (),
     },
     Entered(data::EscapableHandleScope),
   }
@@ -147,6 +212,11 @@ pub mod alloc {
     Entered(data::HandleScope),
   }
 
+  impl<'a, P> ContextScope<'a, P> {
+    pub fn enter(&'a mut self) -> &'a mut active::ContextScope<'a, P> {
+      unimplemented!()
+    }
+  }
   impl<'a> HandleScope<'a, ()> {
     pub fn enter(&'a mut self) -> &'a mut active::HandleScope<'a, ()> {
       unimplemented!()
@@ -182,7 +252,10 @@ pub mod alloc {
 pub(self) mod active {
   use super::*;
 
-  pub struct EscapeSlot<'a>(*const (), PhantomData<&'a mut ()>);
+  pub struct ContextScope<'a, P = ()> {
+    pub(super) effective_scope: NonNull<EffectiveScope>,
+    _phantom: PhantomData<&'a mut P>,
+  }
   pub struct HandleScope<'a, P = Context> {
     pub(super) effective_scope: NonNull<EffectiveScope>,
     _phantom: PhantomData<&'a mut P>,
@@ -196,6 +269,17 @@ pub(self) mod active {
     _phantom: PhantomData<&'a mut P>,
   }
 
+  impl<'a> ContextScope<'a> {
+    pub fn root(_context: &'a Context) -> alloc::ContextScope<'a, ()> {
+      unimplemented!()
+    }
+    pub fn new<'b: 'a, P: AddContextScope<'a> + 'b>(
+      _parent: &'a mut P,
+      _context: &'a Context,
+    ) -> <P as AddContextScope<'a>>::NewScope {
+      unimplemented!()
+    }
+  }
   impl<'a> HandleScope<'a> {
     pub fn root() -> alloc::HandleScope<'a, ()> {
       unimplemented!()
@@ -221,6 +305,9 @@ pub(self) mod active {
     }
   }
 
+  impl<'a, P> Drop for ContextScope<'a, P> {
+    fn drop(&mut self) {}
+  }
   impl<'a, P> Drop for HandleScope<'a, P> {
     fn drop(&mut self) {}
   }
@@ -231,8 +318,21 @@ pub(self) mod active {
     fn drop(&mut self) {}
   }
 
+  impl<'a, P> Deref for ContextScope<'a, P> {
+    type Target = P;
+    fn deref(&self) -> &Self::Target {
+      unsafe { &*(self as *const _ as *const Self::Target) }
+    }
+  }
+
+  impl<'a, P> DerefMut for ContextScope<'a, P> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      unsafe { &mut *(self as *mut _ as *mut Self::Target) }
+    }
+  }
+
   impl<'a> Deref for HandleScope<'a> {
-    type Target = HandleScope<'a, ()>;
+    type Target = ContextScope<'a, ()>;
     fn deref(&self) -> &Self::Target {
       unsafe { &*(self as *const _ as *const Self::Target) }
     }
@@ -416,14 +516,14 @@ mod data2 {
     type Prior: Default;
     fn enter(
       &mut self,
-      prior: &mut Self::Prior,
-      effective_scope: &mut EffectiveScope,
+      _prior: &mut Self::Prior,
+      _effective_scope: &mut EffectiveScope,
     ) {
     }
     fn exit(
       &mut self,
-      prior: &mut Self::Prior,
-      effective_scope: &mut EffectiveScope,
+      _prior: &mut Self::Prior,
+      _effective_scope: &mut EffectiveScope,
     ) {
     }
   }
@@ -432,14 +532,14 @@ mod data2 {
     type Prior = ();
     fn enter(
       &mut self,
-      prior: &mut Self::Prior,
-      effective_scope: &mut EffectiveScope,
+      _prior: &mut Self::Prior,
+      _effective_scope: &mut EffectiveScope,
     ) {
     }
     fn exit(
       &mut self,
-      prior: &mut Self::Prior,
-      effective_scope: &mut EffectiveScope,
+      _prior: &mut Self::Prior,
+      _effective_scope: &mut EffectiveScope,
     ) {
     }
   }
@@ -453,7 +553,7 @@ mod data2 {
       prior: &mut Self::Prior,
       effective_scope: &mut EffectiveScope,
     ) {
-      // XXX Create raw trycatch.
+      // XXX enter Context.
       let ctx = effective_scope.context.replace(self.0);
       let ctx = replace(prior, ctx);
       assert!(ctx.is_none());
@@ -466,7 +566,7 @@ mod data2 {
       let ctx = prior.take();
       let ctx = replace(&mut effective_scope.context, ctx).unwrap();
       assert_eq!(ctx, self.0);
-      // XXX Destroy raw trycatch.
+      // XXX exit Context.
     }
   }
 
@@ -476,15 +576,15 @@ mod data2 {
     type Prior = ();
     fn enter(
       &mut self,
-      prior: &mut Self::Prior,
-      effective_scope: &mut EffectiveScope,
+      _prior: &mut Self::Prior,
+      _effective_scope: &mut EffectiveScope,
     ) {
       // Create raw handlescope.
     }
     fn exit(
       &mut self,
-      prior: &mut Self::Prior,
-      effective_scope: &mut EffectiveScope,
+      _prior: &mut Self::Prior,
+      _effective_scope: &mut EffectiveScope,
     ) {
       // Destroy raw handlescope.
     }
@@ -541,59 +641,6 @@ mod data2 {
       // XXX Destroy raw trycatch.
     }
   }
-
-  /*  type Param;
-
-    fn new(param: Self::Param) -> Self;
-
-    // ? fn get_self_anchor(&mut self) -> NonNull<NonNull<EffectiveScope>>;
-    // ? fn get_prior_anchor(&mut self) -> NonNull<NonNull<EffectiveScope>>;
-
-    fn become_topmost(&mut self) {
-      let eff = self.get_effective_scope();
-      let prior = self.get_prior();
-      let prev = eff.topmost_scope.replace(NonNull::from(eff));
-      assert_eq!(prior, prev);
-    }
-    fn restore_topmost(&mut self) {}
-
-    fn enter_context(&mut self) {}
-    fn exit_context(&mut self) {}
-
-    fn init_handle_scope(&mut self) {}
-    fn drop_handle_scope(&mut self) {}
-    fn init_escape_slot(&mut self) {}
-    fn drop_escape_slot(&mut self) {}
-    fn init_try_catch(&mut self) {}
-    fn drop_try_catch(&mut self) {}
-
-    fn enter(&mut self) {
-      self.assert_prior_topmost();
-      self.become_topmost();
-      self.assert_self_topmost();
-
-      self.enter_context();
-      self.init_escape_slot();
-      self.init_handle_scope();
-      self.init_try_catch();
-    }
-
-    fn exit(&mut self) {
-      self.assert_self_topmost();
-      self.restore_topmost();
-      self.assert_prior_topmost();
-
-      self.drop_try_catch();
-      self.drop_handle_scope();
-      self.drop_escape_slot();
-      self.exit_context();
-    }
-  }
-
-  struct HandleScope<'a, P = ()> {
-    prior: &'a mut NonNull<EffectiveScope>,
-    _phantom: PhantomData<P>,
-  }*/
 }
 
 mod raw {
