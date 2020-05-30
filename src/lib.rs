@@ -386,89 +386,120 @@ pub(self) mod active {
   impl<'a, 'b> TryCatch<'a, HandleScope<'b, Context>> {}
 }
 
-use data2::EffectiveScope;
+struct Isolate();
+type Address = usize;
+
+pub struct EffectiveScope {
+  last_entered: Option<NonNull<data2::Header>>,
+  context: Option<NonNull<raw::Context>>,
+  escape_slot: Option<NonNull<raw::Address>>,
+  try_catch: Option<NonNull<raw::TryCatch>>,
+}
+
 mod data2 {
   use super::*;
 
-  struct Isolate();
-  type Address = usize;
-
-  pub struct EffectiveScope {
-    innermost: Option<NonNull<Innermost>>,
-    isolate: Option<NonNull<Isolate>>,
-    context: Option<NonNull<Context>>,
-    escape_slot: Option<NonNull<Address>>,
-    try_catch: Option<NonNull<data2::TryCatch>>,
-  }
-
-  struct ScopeData<'a, C1: ScopeComponent = (), C2: ScopeComponent = ()> {
-    effective: NonNull<EffectiveScope>,
-    effective_prior: Option<NonNull<EffectiveScope>>,
-    component1: C1,
-    component2: C2,
+  struct ScopeData<'a, A1: aspect::Aspect = (), A2: aspect::Aspect = ()> {
+    header: Header,
+    aspect1: A1,
+    aspect2: A2,
     _phantom: PhantomData<&'a mut ()>,
   }
 
-  impl<'a, C1: ScopeComponent, C2: ScopeComponent> ScopeData<'a, C1, C2> {
+  impl<'a, A1: aspect::Aspect, A2: aspect::Aspect> ScopeData<'a, A1, A2> {
+    fn new(
+      effecive_scope: &mut EffectiveScope,
+      aspect1: A1,
+      aspect2: A2,
+    ) -> Self {
+      Self {
+        header: Header::new(effecive_scope),
+        aspect1,
+        aspect2,
+        _phantom: PhantomData,
+      }
+    }
+
     fn enter(&mut self) {
-      let effective_scope = unsafe { self.effective.as_mut() };
-      self.component2.enter(effective_scope);
-      self.component1.enter(effective_scope);
+      let effective_scope = self.header.enter();
+      // Enter scopes in right-to-left order.
+      self.aspect2.enter(effective_scope);
+      self.aspect1.enter(effective_scope);
     }
+
     fn exit(&mut self) {
-      let effective_scope = unsafe { self.effective.as_mut() };
-      self.component1.exit(effective_scope);
-      self.component2.exit(effective_scope);
-    }
-  }
-  impl<'a, C1: ScopeComponent, C2: ScopeComponent> Drop
-    for ScopeData<'a, C1, C2>
-  {
-    fn drop(&mut self) {}
-  }
-
-  trait ScopeParent<'a> {
-    type Prior: 'a;
-    fn prior(&'a mut self) -> Self::Prior;
-  }
-  impl<'a> ScopeParent<'a> for () {
-    type Prior = ();
-    fn prior(&'a mut self) -> Self::Prior {}
-  }
-  impl<'a, 'b: 'a> ScopeParent<'a> for &'a mut active::HandleScope<'b, ()> {
-    type Prior = &'a mut NonNull<EffectiveScope>;
-    fn prior(&'a mut self) -> Self::Prior {
-      &mut self.effective_scope
-    }
-  }
-  impl<'a, 'b: 'a> ScopeParent<'a> for &'a mut active::HandleScope<'b> {
-    type Prior = &'a mut NonNull<EffectiveScope>;
-    fn prior(&'a mut self) -> Self::Prior {
-      &mut self.effective_scope
-    }
-  }
-  impl<'a, 'b: 'a, 'c: 'b> ScopeParent<'a>
-    for &'a mut active::EscapableHandleScope<'b, 'c>
-  {
-    type Prior = &'a mut NonNull<EffectiveScope>;
-    fn prior(&'a mut self) -> Self::Prior {
-      &mut self.effective_scope
-    }
-  }
-  impl<'a, 'b: 'a, H> ScopeParent<'a> for &'a mut active::TryCatch<'b, H> {
-    type Prior = &'a mut NonNull<EffectiveScope>;
-    fn prior(&'a mut self) -> Self::Prior {
-      &mut self.effective_scope
+      let effective_scope = self.header.exit();
+      // Exit in left-to-right order.
+      self.aspect1.exit(effective_scope);
+      self.aspect2.exit(effective_scope);
     }
   }
 
-  trait ScopeComponent {
-    fn new(_effective_scope: &mut EffectiveScope) -> Self
-    where
-      Self: Default,
-    {
-      Default::default()
+  impl<'a, A1: aspect::Aspect, A2: aspect::Aspect> Drop
+    for ScopeData<'a, A1, A2>
+  {
+    fn drop(&mut self) {
+      if self.header.has_scope_been_entered() {
+        self.exit()
+      }
     }
+  }
+
+  #[derive(Eq, PartialEq)]
+  pub struct Header {
+    effective_scope: NonNull<EffectiveScope>,
+    prior_header: Option<NonNull<Header>>,
+  }
+
+  impl Header {
+    fn new(effective_scope: &mut EffectiveScope) -> Self {
+      // TODO: track parent for child scopes.
+      Self {
+        effective_scope: NonNull::from(effective_scope),
+        prior_header: None,
+      }
+    }
+
+    fn enter(&mut self) -> &mut EffectiveScope {
+      let self_ptr = self.as_non_null();
+      let effective_scope = unsafe { self.effective_scope.as_mut() };
+      let prior_header = effective_scope.last_entered.replace(self_ptr);
+      match &mut self.prior_header {
+        p @ Some(_) => assert_eq!(*p, prior_header),
+        p @ None => *p = prior_header,
+      };
+      effective_scope
+    }
+
+    fn exit(&mut self) -> &mut EffectiveScope {
+      let self_ptr = self.as_non_null();
+      let effective_scope = unsafe { self.effective_scope.as_mut() };
+      let exited_header =
+        replace(&mut effective_scope.last_entered, self.prior_header).unwrap();
+      assert_eq!(exited_header, self_ptr);
+      effective_scope
+    }
+
+    fn has_scope_been_entered(&mut self) -> bool {
+      let self_ptr = self.as_non_null();
+      let effective_scope = unsafe { self.effective_scope.as_mut() };
+      match effective_scope.last_entered {
+        Some(p) if p == self_ptr => true,
+        p if p == self.prior_header => false,
+        _ => panic!("cannot use scope while it is shadowed"),
+      }
+    }
+
+    fn as_non_null(&mut self) -> NonNull<Self> {
+      NonNull::from(self)
+    }
+  }
+}
+
+pub(crate) mod aspect {
+  use super::*;
+
+  pub trait Aspect {
     fn enter(&mut self, _effective_scope: &mut EffectiveScope) {}
     fn exit(&mut self, _effective_scope: &mut EffectiveScope) {}
     fn as_non_null(&mut self) -> NonNull<Self> {
@@ -476,44 +507,14 @@ mod data2 {
     }
   }
 
-  impl ScopeComponent for () {}
-
-  #[derive(Eq, PartialEq)]
-  struct Innermost {
-    prior: Option<NonNull<Innermost>>,
-    data: NonNull<EffectiveScope>,
-  }
-  impl Innermost {
-    fn scope_has_been_entered(&mut self) -> bool {
-      let self_ptr = self.as_non_null();
-      let effective_scope = unsafe { self.data.as_ref() };
-      match effective_scope.innermost {
-        Some(p) if p == self_ptr => true,
-        p if p == self.prior => false,
-        _ => panic!("cannot use scope while it is shadowed"),
-      }
-    }
-  }
-  impl ScopeComponent for Innermost {
-    fn enter(&mut self, effective_scope: &mut EffectiveScope) {
-      let entered = effective_scope.innermost.replace(self.as_non_null());
-      match &mut self.prior {
-        prior @ Some(_) => assert_eq!(*prior, entered),
-        prior @ None => *prior = entered,
-      }
-    }
-    fn exit(&mut self, effective_scope: &mut EffectiveScope) {
-      let left = replace(&mut effective_scope.innermost, self.prior).unwrap();
-      assert_eq!(left, self.as_non_null());
-    }
-  }
+  impl Aspect for () {}
 
   #[repr(C)]
-  struct ContextScope {
-    prior: Option<NonNull<Context>>,
-    context: NonNull<Context>,
+  pub struct Context {
+    prior: Option<NonNull<raw::Context>>,
+    context: NonNull<raw::Context>,
   }
-  impl ScopeComponent for ContextScope {
+  impl Aspect for Context {
     fn enter(&mut self, effective_scope: &mut EffectiveScope) {
       // XXX enter Context.
       let c = effective_scope.context.replace(self.context);
@@ -532,7 +533,7 @@ mod data2 {
   struct HandleScope {
     raw: raw::HandleScope,
   }
-  impl ScopeComponent for HandleScope {
+  impl Aspect for HandleScope {
     fn enter(&mut self, _effective_scope: &mut EffectiveScope) {
       // Create raw handlescope.
     }
@@ -545,7 +546,7 @@ mod data2 {
     prior: Option<NonNull<Address>>,
     slot: NonNull<Address>,
   }
-  impl ScopeComponent for EscapeSlot {
+  impl Aspect for EscapeSlot {
     fn enter(&mut self, effective_scope: &mut EffectiveScope) {
       // XXX Create raw slot.
       let e = effective_scope.escape_slot.replace(self.slot);
@@ -562,20 +563,20 @@ mod data2 {
 
   #[repr(C)]
   struct TryCatch {
-    prior: Option<NonNull<TryCatch>>,
-    raw: NonNull<TryCatch>,
+    prior: Option<NonNull<raw::TryCatch>>,
+    raw: NonNull<raw::TryCatch>,
   }
-  impl ScopeComponent for TryCatch {
+  impl Aspect for TryCatch {
     fn enter(&mut self, effective_scope: &mut EffectiveScope) {
       // XXX Create raw trycatch.
-      let tc = effective_scope.try_catch.replace(self.as_non_null());
+      let tc = effective_scope.try_catch.replace(self.raw);
       let tc = replace(&mut self.prior, tc);
       assert!(tc.is_none());
     }
     fn exit(&mut self, effective_scope: &mut EffectiveScope) {
       let tc = self.prior.take();
       let tc = replace(&mut effective_scope.try_catch, tc).unwrap();
-      assert_eq!(tc, self.as_non_null());
+      assert_eq!(tc, self.raw);
       // XXX Destroy raw trycatch.
     }
   }
@@ -583,6 +584,7 @@ mod data2 {
 
 mod raw {
   pub type Address = usize;
+  pub type Context = Address;
   #[repr(C)]
   pub struct HandleScope([usize; 3]);
   #[repr(C)]
