@@ -511,8 +511,16 @@ pub(crate) mod aspect {
 
   #[repr(C)]
   pub struct Context {
-    prior: Option<NonNull<raw::Context>>,
     context: NonNull<raw::Context>,
+    prior: Option<NonNull<raw::Context>>,
+  }
+  impl Context {
+    pub fn new(context: &raw::Context) -> Self {
+      Self {
+        context: NonNull::from(context),
+        prior: None,
+      }
+    }
   }
   impl Aspect for Context {
     fn enter(&mut self, effective_scope: &mut EffectiveScope) {
@@ -533,6 +541,13 @@ pub(crate) mod aspect {
   struct HandleScope {
     raw: raw::HandleScope,
   }
+  impl HandleScope {
+    pub fn new() -> Self {
+      Self {
+        raw: Default::default(),
+      }
+    }
+  }
   impl Aspect for HandleScope {
     fn enter(&mut self, _effective_scope: &mut EffectiveScope) {
       // Create raw handlescope.
@@ -543,8 +558,16 @@ pub(crate) mod aspect {
   }
 
   struct EscapeSlot {
-    prior: Option<NonNull<Address>>,
     slot: NonNull<Address>,
+    prior: Option<NonNull<Address>>,
+  }
+  impl EscapeSlot {
+    pub fn new() -> Self {
+      Self {
+        slot: NonNull::dangling(),
+        prior: None,
+      }
+    }
   }
   impl Aspect for EscapeSlot {
     fn enter(&mut self, effective_scope: &mut EffectiveScope) {
@@ -563,20 +586,30 @@ pub(crate) mod aspect {
 
   #[repr(C)]
   struct TryCatch {
+    raw: raw::TryCatch,
     prior: Option<NonNull<raw::TryCatch>>,
-    raw: NonNull<raw::TryCatch>,
+  }
+  impl TryCatch {
+    pub fn new() -> Self {
+      Self {
+        raw: Default::default(),
+        prior: None,
+      }
+    }
   }
   impl Aspect for TryCatch {
     fn enter(&mut self, effective_scope: &mut EffectiveScope) {
       // XXX Create raw trycatch.
-      let tc = effective_scope.try_catch.replace(self.raw);
-      let tc = replace(&mut self.prior, tc);
-      assert!(tc.is_none());
+      let tc_ptr = NonNull::from(&self.raw);
+      let prior = effective_scope.try_catch.replace(tc_ptr);
+      let none = replace(&mut self.prior, prior);
+      assert!(none.is_none());
     }
     fn exit(&mut self, effective_scope: &mut EffectiveScope) {
-      let tc = self.prior.take();
-      let tc = replace(&mut effective_scope.try_catch, tc).unwrap();
-      assert_eq!(tc, self.raw);
+      let tc_ptr = NonNull::from(&self.raw);
+      let prior = self.prior.take();
+      let tc = replace(&mut effective_scope.try_catch, prior).unwrap();
+      assert_eq!(tc, tc_ptr);
       // XXX Destroy raw trycatch.
     }
   }
@@ -586,7 +619,9 @@ mod raw {
   pub type Address = usize;
   pub type Context = Address;
   #[repr(C)]
+  #[derive(Default)]
   pub struct HandleScope([usize; 3]);
+  #[derive(Default)]
   #[repr(C)]
   pub struct TryCatch([usize; 6]);
 }
