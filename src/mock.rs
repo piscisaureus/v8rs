@@ -7,6 +7,8 @@ use std::ops::DerefMut;
 use std::ptr::null;
 use std::ptr::NonNull;
 
+use crate::active;
+use crate::aspect;
 use crate::raw;
 use crate::EffectiveScope as IsolateAnnex;
 use crate::HandleScope;
@@ -65,7 +67,7 @@ impl Integer {
 
 pub struct Local<'a, T> {
   raw: NonNull<T>,
-  _phantom: PhantomData<&'a T>,
+  _phantom: PhantomData<(&'a T, &'a mut active::HandleScope<'a>)>,
 }
 
 impl<'a, T> Local<'a, T> {
@@ -84,33 +86,44 @@ impl<'a, T> Deref for Local<'a, T> {
   }
 }
 
+#[no_mangle]
 pub extern "C" fn v8__Isolate__GetCurrentContext(
   isolate: *mut Isolate,
 ) -> *const Context {
   dangling()
 }
+#[no_mangle]
 pub extern "C" fn v8__Isolate__GetEnteredOrMicrotaskContext(
   isolate: *mut Isolate,
 ) -> *const Context {
   dangling()
 }
 
-fn v8__Context__GetIsolate(this: *const Context) -> *mut Isolate {
+#[no_mangle]
+pub extern "C" fn v8__Context__GetIsolate(
+  this: *const Context,
+) -> *mut Isolate {
   dangling_mut()
 }
-fn v8__Context__Enter(this: *const Context) {}
-fn v8__Context__Exit(this: *const Context) {}
+#[no_mangle]
+pub extern "C" fn v8__Context__Enter(this: *const Context) {}
+#[no_mangle]
+pub extern "C" fn v8__Context__Exit(this: *const Context) {}
 
+#[no_mangle]
 pub extern "C" fn v8__HandleScope__CONSTRUCT(
   buf: *mut MaybeUninit<raw::HandleScope>,
   isolate: *mut Isolate,
 ) {
 }
+#[no_mangle]
 pub extern "C" fn v8__HandleScope__DESTRUCT(this: *mut raw::HandleScope) {}
 
+#[no_mangle]
 pub extern "C" fn v8__Undefined(isolate: *mut Isolate) -> *const Primitive {
   dangling()
 }
+#[no_mangle]
 pub extern "C" fn v8__Local__New(
   isolate: *mut Isolate,
   other: *const Data,
@@ -118,55 +131,68 @@ pub extern "C" fn v8__Local__New(
   dangling()
 }
 
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__CONSTRUCT(
   buf: *mut MaybeUninit<raw::TryCatch>,
   isolate: *mut Isolate,
 ) {
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__DESTRUCT(this: *mut raw::TryCatch) {}
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__HasCaught(this: *const raw::TryCatch) -> bool {
   Default::default()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__CanContinue(
   this: *const raw::TryCatch,
 ) -> bool {
   Default::default()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__HasTerminated(
   this: *const raw::TryCatch,
 ) -> bool {
   Default::default()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__Exception(
   this: *const raw::TryCatch,
 ) -> *const Value {
   dangling()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__StackTrace(
   this: *const raw::TryCatch,
   context: *const Context,
 ) -> *const Value {
   dangling()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__Message(
   this: *const raw::TryCatch,
 ) -> *const Message {
   dangling()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__Reset(this: *mut raw::TryCatch) {}
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__ReThrow(
   this: *mut raw::TryCatch,
 ) -> *const Value {
   dangling()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__IsVerbose(this: *const raw::TryCatch) -> bool {
   Default::default()
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__SetVerbose(
   this: *mut raw::TryCatch,
   value: bool,
 ) {
 }
+#[no_mangle]
 pub extern "C" fn v8__TryCatch__SetCaptureMessage(
   this: *mut raw::TryCatch,
   value: bool,
@@ -174,9 +200,13 @@ pub extern "C" fn v8__TryCatch__SetCaptureMessage(
 }
 
 fn dangling<T>() -> *const T {
-  NonNull::dangling().as_ptr()
+  Box::into_raw(Box::<T>::new(unsafe {
+    MaybeUninit::zeroed().assume_init()
+  }))
 }
 
 fn dangling_mut<T>() -> *mut T {
-  NonNull::dangling().as_ptr()
+  Box::into_raw(Box::<T>::new(unsafe {
+    MaybeUninit::zeroed().assume_init()
+  }))
 }

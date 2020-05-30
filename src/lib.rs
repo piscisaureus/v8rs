@@ -38,20 +38,36 @@ pub trait RootHandleScopeParam<'a>: GetEffectiveScopeForRoot {
   fn root(&'a self) -> Self::Data;
 }
 impl<'a> RootHandleScopeParam<'a> for Isolate {
-  type Data = data2::HandleScope<'a, active::HandleScope<'a, Isolate>>;
+  type Data = data2::HandleScope<'a, Isolate>;
   fn root(&'a self) -> Self::Data {
     data2::HandleScope::root(self)
   }
 }
 impl<'a> RootHandleScopeParam<'a> for Context {
-  type Data = data2::ContextAndHandleScope<'a, active::HandleScope<'a>>;
+  type Data = data2::ContextAndHandleScope<'a>;
   fn root(&'a self) -> Self::Data {
     data2::ContextAndHandleScope::root(self)
   }
 }
 
+pub trait EnteredContext<'a> {}
+impl<'a, P> EnteredContext<'a> for ContextScope<'a, P> {}
+impl<'a> EnteredContext<'a> for HandleScope<'a, Isolate> {}
+impl<'a> EnteredContext<'a> for HandleScope<'a, Context> {}
+impl<'a, 'b> EnteredContext<'a> for EscapableHandleScope<'a, 'b> {}
+impl<'a, 'b> EnteredContext<'a> for TryCatch<'a, HandleScope<'b, Context>> {}
+impl<'a, 'b, 'c> EnteredContext<'a>
+  for TryCatch<'a, EscapableHandleScope<'b, 'c>>
+{
+}
+
 pub trait GetEffectiveScope {
   fn get_effective_scope(&mut self) -> NonNull<EffectiveScope>;
+}
+impl GetEffectiveScope for Isolate {
+  fn get_effective_scope(&mut self) -> NonNull<EffectiveScope> {
+    NonNull::new(self.get_annex() as *const _ as *mut EffectiveScope).unwrap()
+  }
 }
 impl<'a, P> GetEffectiveScope for active::ContextScope<'a, P> {
   fn get_effective_scope(&mut self) -> NonNull<EffectiveScope> {
@@ -89,19 +105,23 @@ impl<'a, 'b, 'c> GetEffectiveScope
 }
 
 pub trait AddContextScope<'a>: GetEffectiveScope {
-  type NewScope: GetEffectiveScope;
+  type NewScope: GetEffectiveScope + EnteredContext<'a>;
 }
 pub trait AddHandleScope<'a>: GetEffectiveScope {
-  type NewScope: GetEffectiveScope;
+  type NewScope: GetEffectiveScope + EnteredContext<'a>;
 }
 pub trait AddEscapableHandleScope<'a>: GetEffectiveScope {
-  type NewScope: GetEffectiveScope;
+  type NewScope: GetEffectiveScope + EnteredContext<'a>;
 }
 pub trait AddTryCatch<'a>: GetEffectiveScope {
-  type NewScope: GetEffectiveScope;
+  type NewScope: GetEffectiveScope + EnteredContext<'a>;
 }
 
 // ===== ContextScope<'a> =====
+
+impl<'a, 'b: 'a> AddContextScope<'a> for Isolate {
+  type NewScope = active::ContextScope<'a, Isolate>;
+}
 
 impl<'a, 'b: 'a> AddContextScope<'a> for active::HandleScope<'b, Isolate> {
   type NewScope = active::ContextScope<'a, active::HandleScope<'b>>;
@@ -133,7 +153,11 @@ impl<'a, 'b: 'a, 'c: 'b> AddContextScope<'a>
 
 // ===== HandleScope<'a> =====
 
-impl<'a, 'b: 'a> AddHandleScope<'a> for active::ContextScope<'b> {
+impl<'a> AddHandleScope<'a> for Isolate {
+  type NewScope = active::HandleScope<'a, Isolate>;
+}
+
+impl<'a, 'b: 'a> AddHandleScope<'a> for active::ContextScope<'a> {
   type NewScope = active::HandleScope<'a>;
 }
 
@@ -234,15 +258,13 @@ pub(self) mod active {
   }
 
   impl<'a> ContextScope<'a> {
-    pub fn root(
-      context: &'a Context,
-    ) -> data2::ContextScope<'a, active::ContextScope<'a, ()>> {
+    pub fn root(context: &'a Context) -> data2::ContextScope<'a, Isolate> {
       data2::ContextScope::root(context)
     }
-    pub fn new<'b: 'a, P: AddContextScope<'a> + 'b>(
+    pub fn new<P: AddContextScope<'a>>(
       parent: &'a mut P,
       context: &'a Context,
-    ) -> data2::ContextScope<'a, <P as AddContextScope<'a>>::NewScope> {
+    ) -> data2::ContextScope<'a, P> {
       data2::ContextScope::new(parent, context)
     }
   }
@@ -254,47 +276,52 @@ pub(self) mod active {
   }
 
   impl<'a> HandleScope<'a> {
-    pub fn new<'b: 'a, P: AddHandleScope<'a> + 'b>(
+    pub fn new<P: AddHandleScope<'a>>(
       parent: &'a mut P,
-    ) -> data2::HandleScope<'a, <P as AddHandleScope<'a>>::NewScope> {
+    ) -> data2::HandleScope<'a, P> {
       data2::HandleScope::new(parent)
     }
   }
 
   impl<'a, 'b> EscapableHandleScope<'a, 'b> {
-    pub fn new<'c: 'a, P: AddEscapableHandleScope<'a> + 'c>(
+    pub fn new<P: AddEscapableHandleScope<'a>>(
       parent: &'a mut P,
-    ) -> data2::EscapableHandleScope<
-      'a,
-      <P as AddEscapableHandleScope<'a>>::NewScope,
-    > {
-      data2::EscapableHandleScope::new(parent.get_effective_scope())
+    ) -> data2::EscapableHandleScope<'a, P> {
+      data2::EscapableHandleScope::new(parent)
     }
   }
 
   impl<'a> TryCatch<'a> {
-    pub fn new<'b: 'a, P: AddTryCatch<'a> + 'b>(
+    pub fn new<P: AddTryCatch<'a>>(
       parent: &'a mut P,
-    ) -> data2::TryCatch<'a, <P as AddTryCatch<'a>>::NewScope> {
-      data2::TryCatch::new(parent.get_effective_scope())
+    ) -> data2::TryCatch<'a, P> {
+      data2::TryCatch::new(parent)
     }
   }
 
-  impl<'a, P> Drop for ContextScope<'a, P> {
-    fn drop(&mut self) {}
-  }
-
-  impl<'a, P> Drop for HandleScope<'a, P> {
-    fn drop(&mut self) {}
-  }
-
-  impl<'a, 'b> Drop for EscapableHandleScope<'a, 'b> {
-    fn drop(&mut self) {}
-  }
-
-  impl<'a, P> Drop for TryCatch<'a, P> {
-    fn drop(&mut self) {}
-  }
+  // impl<'a, P> Drop for ContextScope<'a, P> {
+  //   fn drop(&mut self) {
+  //     eprintln!("dropping entered {}", std::any::type_name::<Self>());
+  //   }
+  // }
+  //
+  // impl<'a, P> Drop for HandleScope<'a, P> {
+  //   fn drop(&mut self) {
+  //     eprintln!("dropping entered {}", std::any::type_name::<Self>());
+  //   }
+  // }
+  //
+  // impl<'a, 'b> Drop for EscapableHandleScope<'a, 'b> {
+  //   fn drop(&mut self) {
+  //     eprintln!("dropping entered {}", std::any::type_name::<Self>());
+  //   }
+  // }
+  //
+  // impl<'a, P> Drop for TryCatch<'a, P> {
+  //   fn drop(&mut self) {
+  //     eprintln!("dropping entered {}", std::any::type_name::<Self>());
+  //   }
+  // }
 
   impl<'a, P> Deref for ContextScope<'a, P> {
     type Target = P;
@@ -379,18 +406,15 @@ pub struct EffectiveScope {
 mod data2 {
   use super::*;
 
-  pub struct ContextScope<'a, E> {
+  pub struct ContextScope<'a, P> {
     inner: ScopeDataInner<aspect::Context>,
-    _phantom: PhantomData<&'a mut E>,
+    _phantom: PhantomData<&'a mut P>,
   }
-  impl<'a, E> ContextScope<'a, E> {
+  impl<'a, P: AddContextScope<'a>> ContextScope<'a, P> {
     pub(super) fn root(context: &Context) -> Self {
       Self::new_impl(context.get_effective_scope(), context)
     }
-    pub(super) fn new(
-      parent: &'a mut impl GetEffectiveScope,
-      context: &Context,
-    ) -> Self {
+    pub(super) fn new(parent: &'a mut P, context: &'a Context) -> Self {
       Self::new_impl(parent.get_effective_scope(), context)
     }
     fn new_impl(effective: NonNull<EffectiveScope>, context: &Context) -> Self {
@@ -403,40 +427,48 @@ mod data2 {
         _phantom: PhantomData,
       }
     }
-    pub fn enter(&'a mut self) -> &'a mut E {
+    pub fn enter(&'a mut self) -> &'a mut P::NewScope {
       self.inner.enter()
     }
   }
 
-  pub struct HandleScope<'a, E> {
+  pub struct HandleScope<'a, P: AddHandleScope<'a>> {
     inner: ScopeDataInner<aspect::HandleScope>,
-    _phantom: PhantomData<&'a mut E>,
+    _phantom: PhantomData<(&'a mut P, &'a mut P::NewScope, P::NewScope)>,
   }
-  impl<'a> HandleScope<'a, active::HandleScope<'a, Isolate>> {
+  impl<'a> HandleScope<'a, Isolate> {
     pub(super) fn root(isolate: &'a Isolate) -> Self {
-      Self::new_impl(isolate.get_effective_scope())
-    }
-  }
-  impl<'a, E> HandleScope<'a, E> {
-    pub(super) fn new(parent: &'a mut impl GetEffectiveScope) -> Self {
-      Self::new_impl(parent.get_effective_scope())
-    }
-    fn new_impl(effective: NonNull<EffectiveScope>) -> Self {
       Self {
-        inner: ScopeDataInner::new(effective, aspect::HandleScope::new(), ()),
+        inner: ScopeDataInner::new(
+          isolate.get_effective_scope(),
+          aspect::HandleScope::new(),
+          (),
+        ),
         _phantom: PhantomData,
       }
     }
-    pub fn enter(&'a mut self) -> &'a mut E {
+  }
+  impl<'a, P: AddHandleScope<'a>> HandleScope<'a, P> {
+    pub(super) fn new(parent: &'a mut P) -> Self {
+      Self {
+        inner: ScopeDataInner::new(
+          parent.get_effective_scope(),
+          aspect::HandleScope::new(),
+          (),
+        ),
+        _phantom: PhantomData,
+      }
+    }
+    pub fn enter(&'a mut self) -> &'a mut P::NewScope {
       self.inner.enter()
     }
   }
 
-  pub struct ContextAndHandleScope<'a, E> {
+  pub struct ContextAndHandleScope<'a> {
     inner: ScopeDataInner<aspect::Context, aspect::HandleScope>,
-    _phantom: PhantomData<&'a mut E>,
+    _phantom: PhantomData<&'a Context>,
   }
-  impl<'a, E> ContextAndHandleScope<'a, E> {
+  impl<'a> ContextAndHandleScope<'a> {
     pub(super) fn root(context: &'a Context) -> Self {
       Self {
         inner: ScopeDataInner::new(
@@ -447,43 +479,47 @@ mod data2 {
         _phantom: PhantomData,
       }
     }
-    pub fn enter(&'a mut self) -> &'a mut E {
+    pub fn enter(&'a mut self) -> &'a mut active::HandleScope<'a> {
       self.inner.enter()
     }
   }
 
-  pub struct EscapableHandleScope<'a, E> {
+  pub struct EscapableHandleScope<'a, P> {
     inner: ScopeDataInner<aspect::EscapeSlot, aspect::HandleScope>,
-    _phantom: PhantomData<&'a mut E>,
+    _phantom: PhantomData<&'a mut P>,
   }
-  impl<'a, E> EscapableHandleScope<'a, E> {
-    pub(super) fn new(effective: NonNull<EffectiveScope>) -> Self {
+  impl<'a, P: AddEscapableHandleScope<'a>> EscapableHandleScope<'a, P> {
+    pub(super) fn new(parent: &'a mut P) -> Self {
       Self {
         inner: ScopeDataInner::new(
-          effective,
+          parent.get_effective_scope(),
           aspect::EscapeSlot::new(),
           aspect::HandleScope::new(),
         ),
         _phantom: PhantomData,
       }
     }
-    pub fn enter(&'a mut self) -> &'a mut E {
+    pub fn enter(&'a mut self) -> &'a mut P::NewScope {
       self.inner.enter()
     }
   }
 
-  pub struct TryCatch<'a, E> {
+  pub struct TryCatch<'a, P> {
     inner: ScopeDataInner<aspect::TryCatch>,
-    _phantom: PhantomData<&'a mut E>,
+    _phantom: PhantomData<&'a mut P>,
   }
-  impl<'a, E> TryCatch<'a, E> {
-    pub(super) fn new(effective: NonNull<EffectiveScope>) -> Self {
+  impl<'a, P: AddTryCatch<'a>> TryCatch<'a, P> {
+    pub(super) fn new(parent: &'a mut P) -> Self {
       Self {
-        inner: ScopeDataInner::new(effective, aspect::TryCatch::new(), ()),
+        inner: ScopeDataInner::new(
+          parent.get_effective_scope(),
+          aspect::TryCatch::new(),
+          (),
+        ),
         _phantom: PhantomData,
       }
     }
-    pub fn enter(&'a mut self) -> &'a mut E {
+    pub fn enter(&'a mut self) -> &'a mut P::NewScope {
       self.inner.enter()
     }
   }
@@ -507,7 +543,7 @@ mod data2 {
       }
     }
 
-    fn enter<'a, E>(&'a mut self) -> &'a mut E {
+    fn enter<'a, E: EnteredContext<'a>>(&'a mut self) -> &'a mut E {
       {
         let effective_scope = self.header.enter();
         self.aspect1.enter(effective_scope);
@@ -528,7 +564,9 @@ mod data2 {
 
   impl<A1: aspect::Aspect, A2: aspect::Aspect> Drop for ScopeDataInner<A1, A2> {
     fn drop(&mut self) {
+      eprintln!("dropping data {}", std::any::type_name::<Self>());
       if self.header.has_scope_been_entered() {
+        eprintln!("dropping data entered {}", std::any::type_name::<Self>());
         self.exit()
       }
     }

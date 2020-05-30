@@ -13,26 +13,33 @@ fn main() {
   let root = root.enter();
 
   let ctx = Context::new(root);
-  let mut s1 = ContextScope::new(root, &ctx);
-  let s1 = s1.enter();
+  let mut s1_ = ContextScope::new(root, &ctx);
+  let s1 = s1_.enter();
 
   let _s1l1 = Integer::new(s1, 0);
   let _s1l2 = Integer::new(s1, 0);
   let _fail = {
-    let mut s2 = HandleScope::new(s1);
-    let s2 = s2.enter();
+    let mut s2_ = HandleScope::new(s1);
+    let s2 = s2_.enter();
+
+    let ctx = Context::new(s2);
+    let mut s3_ = ContextScope::new(s2, &ctx);
+    let s3 = s3_.enter();
 
     let s2l1 = Integer::new(s2, 0);
-    let _s2l2 = Integer::new(s2, 0);
+    let mut sxx_ = HandleScope::new(s2);
+    let sxx = sxx_.enter();
+    //let _s2l2 = Integer::new(s2, 0);
+    eprintln!("new in s1 ContextScope<HandleScope>");
     //let _fail = Integer::new(s1, 0);
-    s2l1
+    //s2l1;
   };
-  _fail;
   let _s1l3 = Integer::new(s1, 0);
 
-  test1();
+  //test1();
 }
 
+#[cfg(off)]
 fn test1() {
   let isolate = Isolate::new();
 
