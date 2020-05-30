@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 winapi = "0.3.8"
+derive_deref = "1.1.0"
